@@ -12,7 +12,7 @@ from backend.hybrid_engine  import get_recommendations
 from backend.riasec         import RIASEC_QUESTIONS, RIASEC_LABELS, RIASEC_DESCRIPTIONS, compute_riasec_scores
 from backend.explainability import generate_explanation
 from backend.job_market     import fetch_job_market_data
-from backend.pathway        import fetch_career_pathway
+from backend.pathway        import fetch_career_pathway, fetch_local_recommendations
 
 
 # ── Page config ───────────────────────────────────────────────
@@ -89,7 +89,7 @@ st.markdown("""
         color: #d0d8e8;
         line-height: 1.5;
     }
-    .step-box b { color: #93c5fd; }
+    .step-box b     { color: #93c5fd; }
     .step-box small { color: #8899aa; }
 
     div[data-testid="stButton"] button {
@@ -100,6 +100,7 @@ st.markdown("""
     }
 </style>
 """, unsafe_allow_html=True)
+
 # ── Stream badge colours ──────────────────────────────────────
 STREAM_BADGE = {
     "Science":    "badge-science",
@@ -107,6 +108,20 @@ STREAM_BADGE = {
     "Arts":       "badge-arts",
     "Vocational": "badge-vocational"
 }
+
+# ── Indian states list ────────────────────────────────────────
+INDIAN_STATES = [
+    "Andhra Pradesh", "Arunachal Pradesh", "Assam", "Bihar",
+    "Chhattisgarh", "Goa", "Gujarat", "Haryana",
+    "Himachal Pradesh", "Jharkhand", "Karnataka", "Kerala",
+    "Madhya Pradesh", "Maharashtra", "Manipur", "Meghalaya",
+    "Mizoram", "Nagaland", "Odisha", "Punjab", "Rajasthan",
+    "Sikkim", "Tamil Nadu", "Telangana", "Tripura",
+    "Uttar Pradesh", "Uttarakhand", "West Bengal",
+    "Delhi", "Jammu & Kashmir", "Ladakh",
+    "Puducherry", "Chandigarh", "Andaman & Nicobar Islands",
+    "Dadra & Nagar Haveli", "Daman & Diu", "Lakshadweep"
+]
 
 
 # ══════════════════════════════════════════════════════════════
@@ -153,7 +168,10 @@ def main():
             elif i + 1 == current:
                 st.info(f"**{step}**")
             else:
-                st.markdown(f"<div style='color:#aaa'>{step}</div>", unsafe_allow_html=True)
+                st.markdown(
+                    f"<div style='color:#aaa'>{step}</div>",
+                    unsafe_allow_html=True
+                )
     st.markdown("---")
 
     # ══════════════════════════════════════════════════════════
@@ -167,29 +185,22 @@ def main():
             col1, col2 = st.columns(2)
 
             with col1:
-                name   = st.text_input("Your Name", placeholder="e.g. Riya Sharma")
+                name   = st.text_input("Your Name",
+                            placeholder="e.g. Riya Sharma")
                 stream = st.selectbox("Class 12 Stream",
                             ["Science", "Commerce", "Arts", "Vocational"])
                 marks  = st.slider("Your Marks (%)", 40, 100, 75)
-
-            with col2:
-                city   = st.text_input("Your City", placeholder="e.g. Kurnool")
-                state  = st.selectbox("Your State", [
-                    "Andhra Pradesh", "Arunachal Pradesh", "Assam", "Bihar",
-                    "Chhattisgarh", "Delhi", "Goa", "Gujarat", "Haryana",
-                    "Himachal Pradesh", "Jharkhand", "Karnataka", "Kerala",
-                    "Madhya Pradesh", "Maharashtra", "Manipur", "Meghalaya",
-                    "Mizoram", "Nagaland", "Odisha", "Punjab", "Rajasthan",
-                    "Sikkim", "Tamil Nadu", "Telangana", "Tripura",
-                    "Uttar Pradesh", "Uttarakhand", "West Bengal",
-                    "Jammu & Kashmir", "Ladakh", "Puducherry", "Chandigarh"
-                ])
                 budget = st.selectbox("Annual Education Budget",
                             ["Under ₹50,000", "₹50,000–₹1.5L",
                              "₹1.5L–₹5L",    "Above ₹5L"])
+
+            with col2:
+                city   = st.text_input("Your City",
+                            placeholder="e.g. Kurnool")
+                state  = st.selectbox("Your State", INDIAN_STATES)
                 query  = st.text_area("What are your interests?",
                             placeholder="e.g. I love biology, drawing, and helping people",
-                            height=80)
+                            height=120)
 
             submitted = st.form_submit_button("Continue to RIASEC Quiz →")
 
@@ -207,7 +218,6 @@ def main():
                         "budget":     budget,
                         "query":      query
                     }
-                    st.session_state.screen = 'profile'
                     st.session_state.screen = 'quiz'
                     st.rerun()
 
@@ -237,9 +247,9 @@ def main():
 
             if submitted:
                 riasec = compute_riasec_scores(answers)
-                st.session_state.riasec   = riasec
-                st.session_state.screen   = 'results'
-                st.session_state.results  = []
+                st.session_state.riasec  = riasec
+                st.session_state.screen  = 'results'
+                st.session_state.results = []
                 st.rerun()
 
         if st.button("← Back to Profile"):
@@ -256,24 +266,28 @@ def main():
 
         st.markdown("### 🎯 Your Career Recommendations")
 
-        # Summary cards
+        # Summary metric cards
         c1, c2, c3, c4 = st.columns(4)
         with c1:
-            st.markdown(f'<div class="metric-box"><h3>{profile["stream"]}</h3><p>Your Stream</p></div>',
-                        unsafe_allow_html=True)
+            st.markdown(
+                f'<div class="metric-box"><h3>{profile["stream"]}</h3><p>Your Stream</p></div>',
+                unsafe_allow_html=True)
         with c2:
-            st.markdown(f'<div class="metric-box"><h3>{riasec["riasec_code"]}</h3><p>RIASEC Code</p></div>',
-                        unsafe_allow_html=True)
+            st.markdown(
+                f'<div class="metric-box"><h3>{riasec["riasec_code"]}</h3><p>RIASEC Code</p></div>',
+                unsafe_allow_html=True)
         with c3:
-            st.markdown(f'<div class="metric-box"><h3>{profile["marks"]}%</h3><p>Your Marks</p></div>',
-                        unsafe_allow_html=True)
+            st.markdown(
+                f'<div class="metric-box"><h3>{profile["marks"]}%</h3><p>Your Marks</p></div>',
+                unsafe_allow_html=True)
         with c4:
-            st.markdown(f'<div class="metric-box"><h3>{RIASEC_LABELS[riasec["top2"][0]]}</h3><p>Primary Personality</p></div>',
-                        unsafe_allow_html=True)
+            st.markdown(
+                f'<div class="metric-box"><h3>{RIASEC_LABELS[riasec["top2"][0]]}</h3><p>Primary Personality</p></div>',
+                unsafe_allow_html=True)
 
         st.markdown("")
 
-        # RIASEC profile detail
+        # RIASEC profile expander
         with st.expander("📊 View Your Full RIASEC Profile"):
             for rtype, score in riasec['ranked']:
                 st.markdown(f"**{RIASEC_LABELS[rtype]}** ({rtype}) — {score}/10")
@@ -315,20 +329,20 @@ def main():
             st.markdown(f"""
             <div class="career-card">
                 <div style="display:flex;justify-content:space-between;align-items:center">
-                    <span style="font-size:1.1rem;font-weight:700">
+                    <span style="font-size:1.1rem;font-weight:700;color:#f0f0f0">
                         #{i+1} {rec['career']} {stream_icon}{riasec_icon}
                     </span>
                     <div style="text-align:right">
-                        <span style="font-size:1.3rem;font-weight:700;color:#0f3460">
+                        <span style="font-size:1.3rem;font-weight:700;color:#60a5fa">
                             {int(rec['final_score']*100)}%
                         </span><br>
-                        <small style="color:#888">match score</small>
+                        <small style="color:#888888">match score</small>
                     </div>
                 </div>
                 <div style="margin-top:0.5rem">
                     <span class="badge {badge}">{rec['stream']}</span>
-                    <span class="badge" style="background:#f0f4f8;color:#555">{rec['sector']}</span>
-                    <span class="badge" style="background:#e8f4fd;color:#0f3460">
+                    <span class="badge" style="background:#2a3040;color:#aabbcc">{rec['sector']}</span>
+                    <span class="badge" style="background:#1e2e40;color:#93c5fd">
                         RIASEC: {rec['primary_riasec']}/{rec['secondary_riasec']}
                     </span>
                 </div>
@@ -368,8 +382,8 @@ def main():
         st.markdown(f"### 🗺️ {rec['career']}")
         st.markdown(f"""
         <span class="badge {badge}">{rec['stream']}</span>
-        <span class="badge" style="background:#f0f4f8;color:#555">{rec['sector']}</span>
-        <span class="badge" style="background:#e8f4fd;color:#0f3460">
+        <span class="badge" style="background:#2a3040;color:#aabbcc">{rec['sector']}</span>
+        <span class="badge" style="background:#1e2e40;color:#93c5fd">
             RIASEC: {rec['primary_riasec']}/{rec['secondary_riasec']}
         </span>
         """, unsafe_allow_html=True)
@@ -380,18 +394,24 @@ def main():
         # ── Tab 1: Job Market ──────────────────────────────────
         with tab1:
             with st.spinner("🌐 Fetching live job data..."):
-                job = fetch_job_market_data(rec['career'], st.secrets["SERPAPI_KEY"])
+                job = fetch_job_market_data(
+                    rec['career'],
+                    st.secrets["SERPAPI_KEY"]
+                )
 
             c1, c2, c3 = st.columns(3)
             with c1:
-                st.markdown(f'<div class="metric-box"><h3>{job["total"]}+</h3><p>Sample Openings</p></div>',
-                            unsafe_allow_html=True)
+                st.markdown(
+                    f'<div class="metric-box"><h3>{job["total"]}+</h3><p>Sample Openings</p></div>',
+                    unsafe_allow_html=True)
             with c2:
-                st.markdown(f'<div class="metric-box"><h3 style="font-size:1rem">{job["demand"]}</h3><p>Market Demand</p></div>',
-                            unsafe_allow_html=True)
+                st.markdown(
+                    f'<div class="metric-box"><h3 style="font-size:1rem">{job["demand"]}</h3><p>Market Demand</p></div>',
+                    unsafe_allow_html=True)
             with c3:
-                st.markdown(f'<div class="metric-box"><h3 style="font-size:1rem">{job["salary"]}</h3><p>Salary Range</p></div>',
-                            unsafe_allow_html=True)
+                st.markdown(
+                    f'<div class="metric-box"><h3 style="font-size:1rem">{job["salary"]}</h3><p>Salary Range</p></div>',
+                    unsafe_allow_html=True)
 
             if job['companies']:
                 st.markdown("")
@@ -400,6 +420,8 @@ def main():
 
         # ── Tab 2: Career Pathway ──────────────────────────────
         with tab2:
+
+            # ── National Pathway ──────────────────────────────
             with st.spinner("🤖 Generating career roadmap..."):
                 pathway = fetch_career_pathway(
                     rec['career'], rec['stream'], rec['sector'],
@@ -412,8 +434,9 @@ def main():
                 with col1:
                     st.markdown("**📚 Steps After Class 12**")
                     for step in pathway.get("after_class12", []):
-                        st.markdown(f'<div class="step-box">→ {step}</div>',
-                                    unsafe_allow_html=True)
+                        st.markdown(
+                            f'<div class="step-box">→ {step}</div>',
+                            unsafe_allow_html=True)
 
                     st.markdown("")
                     st.markdown("**📝 National Entrance Exams**")
@@ -437,7 +460,7 @@ def main():
                                 unsafe_allow_html=True)
 
                 with col2:
-                    st.markdown("**🎓 Top Colleges**")
+                    st.markdown("**🎓 Top Colleges (National)**")
                     for college in pathway.get("top_colleges", []):
                         st.markdown(
                             f'<div class="step-box">'
@@ -476,8 +499,85 @@ def main():
                     "⚠️ AI-generated roadmap — "
                     "verify exam details at official websites."
                 )
+
             else:
                 st.warning("Could not generate pathway. Please try again.")
+
+            # ── State-Specific Recommendations ────────────────
+            st.markdown("---")
+            state = profile.get('state', '')
+            st.markdown(f"### 📍 Colleges & Exams in Your State")
+
+            if not state:
+                st.info("💡 Go back to profile and select your state to see local recommendations.")
+            else:
+                with st.spinner(f"🔍 Finding options in {state}..."):
+                    local_data = fetch_local_recommendations(
+                        rec['career'],
+                        rec['stream'],
+                        state,
+                        st.secrets["GROQ_API_KEY"],
+                        supabase
+                    )
+
+                if not local_data:
+                    st.warning(f"Could not fetch local recommendations for {state}.")
+                else:
+                    st.markdown(f"**Showing results for: {state}**")
+                    st.markdown("")
+
+                    col1, col2 = st.columns(2)
+
+                    with col1:
+                        st.markdown(f"**🏫 Top Colleges in {state}**")
+                        for college in local_data.get("state_colleges", []):
+                            ctype = college.get('type', '')
+                            badge_color = (
+                                "#1a3a2a" if "Government" in ctype else
+                                "#2a1a3a" if "Private"    in ctype else
+                                "#1e2530"
+                            )
+                            st.markdown(f"""
+                            <div class="step-box" style="border-left-color:#e94560">
+                                <b>{college.get('name','')}</b><br>
+                                <small>{college.get('city','')} •
+                                <span style="color:#f9a8d4">{ctype}</span></small>
+                            </div>""", unsafe_allow_html=True)
+
+                        st.markdown("")
+                        st.markdown(f"**📝 State Entrance Exams**")
+                        for exam in local_data.get("state_exams", []):
+                            st.markdown(f"""
+                            <div class="step-box">
+                                <b>{exam.get('exam','')}</b><br>
+                                <small>By {exam.get('conducted_by','')} •
+                                {exam.get('eligibility','')}</small>
+                            </div>""", unsafe_allow_html=True)
+
+                    with col2:
+                        scholarships = local_data.get("state_scholarships", [])
+                        st.markdown(f"**🎓 Scholarships in {state}**")
+
+                        if scholarships:
+                            for s in scholarships:
+                                st.markdown(f"""
+                                <div class="step-box" style="border-left-color:#fcd34d">
+                                    <b>{s.get('name','')}</b><br>
+                                    <small>💰 {s.get('amount','')} •
+                                    {s.get('eligibility','')}</small>
+                                </div>""", unsafe_allow_html=True)
+                        else:
+                            st.markdown(
+                                '<div class="step-box">'
+                                'Check the National Scholarship Portal '
+                                '(scholarships.gov.in) for state-specific scholarships.'
+                                '</div>',
+                                unsafe_allow_html=True)
+
+                    st.caption(
+                        "⚠️ AI-generated local recommendations — "
+                        "verify details at official state board websites."
+                    )
 
         st.markdown("")
         if st.button("← Back to Recommendations"):
