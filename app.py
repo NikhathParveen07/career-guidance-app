@@ -28,46 +28,70 @@ st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&display=swap');
     html, body, [class*="css"] { font-family: 'Poppins', sans-serif; }
-    .main { background-color: #f0f4f8; }
 
     .hero {
         background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
         padding: 3rem 2rem; border-radius: 16px;
         text-align: center; color: white; margin-bottom: 2rem;
     }
-    .hero h1 { font-size: 2.5rem; font-weight: 700; margin: 0; }
-    .hero p  { font-size: 1.1rem; opacity: 0.85; margin-top: 0.5rem; }
+    .hero h1 { font-size: 2.5rem; font-weight: 700; margin: 0; color: white; }
+    .hero p  { font-size: 1.1rem; opacity: 0.85; margin-top: 0.5rem; color: white; }
 
     .career-card {
-        background: white; border-radius: 12px;
-        padding: 1.2rem 1.5rem; margin-bottom: 0.8rem;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+        background: #1e2530;
+        border-radius: 12px;
+        padding: 1.2rem 1.5rem;
+        margin-bottom: 0.8rem;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.3);
         border-left: 4px solid #e94560;
+        color: #f0f0f0;
     }
+    .career-card span { color: #f0f0f0 !important; }
+    .career-card small { color: #aaaaaa !important; }
+
     .metric-box {
-        background: #f8faff; border-radius: 10px; padding: 1rem;
-        text-align: center; border: 1px solid #e0e8f0;
+        background: #1e2530;
+        border-radius: 10px;
+        padding: 1rem;
+        text-align: center;
+        border: 1px solid #2e3a4e;
     }
-    .metric-box h3 { font-size: 1.6rem; color: #0f3460; margin: 0; }
-    .metric-box p  { font-size: 0.8rem; color: #666; margin: 0; }
+    .metric-box h3 { font-size: 1.6rem; color: #60a5fa; margin: 0; }
+    .metric-box p  { font-size: 0.8rem; color: #aaaaaa; margin: 0; }
 
     .badge {
         display: inline-block; padding: 3px 10px; border-radius: 20px;
         font-size: 0.75rem; font-weight: 600; margin-right: 4px;
     }
-    .badge-science    { background: #dbeafe; color: #1e40af; }
-    .badge-commerce   { background: #dcfce7; color: #166534; }
-    .badge-arts       { background: #fce7f3; color: #9d174d; }
-    .badge-vocational { background: #fef3c7; color: #92400e; }
+    .badge-science    { background: #1e3a5f; color: #93c5fd; }
+    .badge-commerce   { background: #1a3a2a; color: #86efac; }
+    .badge-arts       { background: #3a1a2e; color: #f9a8d4; }
+    .badge-vocational { background: #3a2e1a; color: #fcd34d; }
 
     .why-box {
-        background: #fffbeb; border-radius: 8px; padding: 0.8rem 1rem;
-        margin-top: 0.5rem; border: 1px solid #fde68a; font-size: 0.85rem;
+        background: #2a2510;
+        border-radius: 8px;
+        padding: 0.8rem 1rem;
+        margin-top: 0.5rem;
+        border: 1px solid #5a4a20;
+        font-size: 0.85rem;
+        color: #e5d5a0;
+        line-height: 1.6;
     }
+    .why-box b { color: #fcd34d; }
+
     .step-box {
-        background: #f0f4f8; border-radius: 8px; padding: 0.8rem 1rem;
-        margin: 0.4rem 0; border-left: 3px solid #0f3460;
+        background: #1e2530;
+        border-radius: 8px;
+        padding: 0.8rem 1rem;
+        margin: 0.4rem 0;
+        border-left: 3px solid #60a5fa;
+        color: #d0d8e8;
+        line-height: 1.5;
     }
+    .step-box b { color: #93c5fd; }
+    .step-box small { color: #8899aa; }
+
     div[data-testid="stButton"] button {
         background: linear-gradient(135deg, #0f3460, #e94560);
         color: white; border: none; border-radius: 8px;
@@ -76,7 +100,6 @@ st.markdown("""
     }
 </style>
 """, unsafe_allow_html=True)
-
 # ── Stream badge colours ──────────────────────────────────────
 STREAM_BADGE = {
     "Science":    "badge-science",
