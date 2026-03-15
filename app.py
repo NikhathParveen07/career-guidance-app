@@ -46,7 +46,7 @@ st.markdown("""
         border-left: 4px solid #e94560;
         color: #f0f0f0;
     }
-    .career-card span { color: #f0f0f0 !important; }
+    .career-card span  { color: #f0f0f0 !important; }
     .career-card small { color: #aaaaaa !important; }
 
     .metric-box {
@@ -119,8 +119,9 @@ INDIAN_STATES = [
     "Sikkim", "Tamil Nadu", "Telangana", "Tripura",
     "Uttar Pradesh", "Uttarakhand", "West Bengal",
     "Delhi", "Jammu & Kashmir", "Ladakh",
-    "Puducherry", "Chandigarh", "Andaman & Nicobar Islands",
-    "Dadra & Nagar Haveli", "Daman & Diu", "Lakshadweep"
+    "Puducherry", "Chandigarh",
+    "Andaman & Nicobar Islands", "Dadra & Nagar Haveli",
+    "Daman & Diu", "Lakshadweep"
 ]
 
 
@@ -195,10 +196,10 @@ def main():
                              "₹1.5L–₹5L",    "Above ₹5L"])
 
             with col2:
-                city   = st.text_input("Your City",
+                city  = st.text_input("Your City",
                             placeholder="e.g. Kurnool")
-                state  = st.selectbox("Your State", INDIAN_STATES)
-                query  = st.text_area("What are your interests?",
+                state = st.selectbox("Your State", INDIAN_STATES)
+                query = st.text_area("What are your interests?",
                             placeholder="e.g. I love biology, drawing, and helping people",
                             height=120)
 
@@ -378,6 +379,7 @@ def main():
             st.rerun()
 
         badge = STREAM_BADGE.get(rec['stream'], 'badge-science')
+        state = profile.get('state', '')
 
         st.markdown(f"### 🗺️ {rec['career']}")
         st.markdown(f"""
@@ -391,7 +393,9 @@ def main():
 
         tab1, tab2 = st.tabs(["📊 Job Market", "🗺️ Career Pathway"])
 
-        # ── Tab 1: Job Market ──────────────────────────────────
+        # ══════════════════════════════════════════════════════
+        # TAB 1 — JOB MARKET
+        # ══════════════════════════════════════════════════════
         with tab1:
             with st.spinner("🌐 Fetching live job data..."):
                 job = fetch_job_market_data(
@@ -418,26 +422,44 @@ def main():
                 st.markdown("**🏢 Top Hiring Companies:**")
                 st.markdown("  •  ".join(job['companies']))
 
-        # ── Tab 2: Career Pathway ──────────────────────────────
+        # ══════════════════════════════════════════════════════
+        # TAB 2 — CAREER PATHWAY
+        # ══════════════════════════════════════════════════════
         with tab2:
 
-            # ── National Pathway ──────────────────────────────
+            # Fetch national pathway
             with st.spinner("🤖 Generating career roadmap..."):
                 pathway = fetch_career_pathway(
                     rec['career'], rec['stream'], rec['sector'],
                     st.secrets["GROQ_API_KEY"], supabase
                 )
 
-            if pathway:
+            # Fetch state-specific data
+            local_data = None
+            if state:
+                with st.spinner(f"🔍 Loading {state} specific options..."):
+                    local_data = fetch_local_recommendations(
+                        rec['career'], rec['stream'], state,
+                        st.secrets["GROQ_API_KEY"], supabase
+                    )
+
+            if not pathway:
+                st.warning("Could not generate pathway. Please try again.")
+
+            else:
                 col1, col2 = st.columns(2)
 
+                # ── Left column ───────────────────────────────
                 with col1:
+
+                    # Steps after Class 12
                     st.markdown("**📚 Steps After Class 12**")
                     for step in pathway.get("after_class12", []):
                         st.markdown(
                             f'<div class="step-box">→ {step}</div>',
                             unsafe_allow_html=True)
 
+                    # National entrance exams
                     st.markdown("")
                     st.markdown("**📝 National Entrance Exams**")
                     for exam in pathway.get("national_exams", []):
@@ -448,18 +470,60 @@ def main():
                             {exam.get('frequency','')}</small>
                         </div>""", unsafe_allow_html=True)
 
-                    if pathway.get("state_exams"):
-                        st.markdown("")
-                        st.markdown("**🏛️ State Admissions**")
-                        for exam in pathway.get("state_exams", []):
-                            st.markdown(
-                                f'<div class="step-box">'
-                                f'{exam.get("exam","")} — '
-                                f'{exam.get("state_or_university","")}'
-                                f'</div>',
-                                unsafe_allow_html=True)
+                    # State admissions — national + local merged
+                    st.markdown("")
+                    heading = (f"**🏛️ State Admissions — {state}**"
+                               if state else "**🏛️ State Admissions**")
+                    st.markdown(heading)
 
+                    # National state exams from pathway
+                    for exam in pathway.get("state_exams", []):
+                        st.markdown(
+                            f'<div class="step-box">'
+                            f'{exam.get("exam","")} — '
+                            f'{exam.get("state_or_university","")}'
+                            f'</div>',
+                            unsafe_allow_html=True)
+
+                    # State-specific exams from local data
+                    if local_data:
+                        for exam in local_data.get("state_exams", []):
+                            st.markdown(f"""
+                            <div class="step-box" style="border-left-color:#e94560">
+                                <b>{exam.get('exam','')}</b><br>
+                                <small>By {exam.get('conducted_by','')} •
+                                {exam.get('eligibility','')}</small>
+                            </div>""", unsafe_allow_html=True)
+
+                    # State colleges
+                    if local_data and local_data.get("state_colleges"):
+                        st.markdown("")
+                        st.markdown(f"**🏫 Colleges in {state}**")
+                        for college in local_data.get("state_colleges", []):
+                            ctype = college.get('type', '')
+                            st.markdown(f"""
+                            <div class="step-box" style="border-left-color:#86efac">
+                                <b>{college.get('name','')}</b><br>
+                                <small>{college.get('city','')} •
+                                <span style="color:#86efac">{ctype}</span></small>
+                            </div>""", unsafe_allow_html=True)
+
+                    # State scholarships
+                    if local_data and local_data.get("state_scholarships"):
+                        st.markdown("")
+                        st.markdown(f"**🎓 Scholarships in {state}**")
+                        for s in local_data.get("state_scholarships", []):
+                            st.markdown(f"""
+                            <div class="step-box" style="border-left-color:#fcd34d">
+                                <b>{s.get('name','')}</b><br>
+                                <small>💰 {s.get('amount','')} •
+                                {s.get('eligibility','')}</small>
+                            </div>""", unsafe_allow_html=True)
+
+                # ── Right column ──────────────────────────────
                 with col2:
+
+                    # National top colleges
                     st.markdown("**🎓 Top Colleges (National)**")
                     for college in pathway.get("top_colleges", []):
                         st.markdown(
@@ -469,6 +533,7 @@ def main():
                             f'</div>',
                             unsafe_allow_html=True)
 
+                    # Timeline
                     st.markdown("")
                     st.markdown("**📅 Timeline**")
                     for t in pathway.get("timeline", []):
@@ -479,6 +544,7 @@ def main():
                             f'</div>',
                             unsafe_allow_html=True)
 
+                    # Career progression
                     st.markdown("")
                     st.markdown("**📈 Career Progression**")
                     prog = pathway.get("career_progression", [])
@@ -486,6 +552,7 @@ def main():
                         f'<div class="step-box">{" → ".join(prog)}</div>',
                         unsafe_allow_html=True)
 
+                    # Starting salary
                     st.markdown("")
                     sal = pathway.get("avg_starting_salary", "")
                     st.markdown(
@@ -497,87 +564,8 @@ def main():
 
                 st.caption(
                     "⚠️ AI-generated roadmap — "
-                    "verify exam details at official websites."
+                    "verify exam and college details at official websites."
                 )
-
-            else:
-                st.warning("Could not generate pathway. Please try again.")
-
-            # ── State-Specific Recommendations ────────────────
-            st.markdown("---")
-            state = profile.get('state', '')
-            st.markdown(f"### 📍 Colleges & Exams in Your State")
-
-            if not state:
-                st.info("💡 Go back to profile and select your state to see local recommendations.")
-            else:
-                with st.spinner(f"🔍 Finding options in {state}..."):
-                    local_data = fetch_local_recommendations(
-                        rec['career'],
-                        rec['stream'],
-                        state,
-                        st.secrets["GROQ_API_KEY"],
-                        supabase
-                    )
-
-                if not local_data:
-                    st.warning(f"Could not fetch local recommendations for {state}.")
-                else:
-                    st.markdown(f"**Showing results for: {state}**")
-                    st.markdown("")
-
-                    col1, col2 = st.columns(2)
-
-                    with col1:
-                        st.markdown(f"**🏫 Top Colleges in {state}**")
-                        for college in local_data.get("state_colleges", []):
-                            ctype = college.get('type', '')
-                            badge_color = (
-                                "#1a3a2a" if "Government" in ctype else
-                                "#2a1a3a" if "Private"    in ctype else
-                                "#1e2530"
-                            )
-                            st.markdown(f"""
-                            <div class="step-box" style="border-left-color:#e94560">
-                                <b>{college.get('name','')}</b><br>
-                                <small>{college.get('city','')} •
-                                <span style="color:#f9a8d4">{ctype}</span></small>
-                            </div>""", unsafe_allow_html=True)
-
-                        st.markdown("")
-                        st.markdown(f"**📝 State Entrance Exams**")
-                        for exam in local_data.get("state_exams", []):
-                            st.markdown(f"""
-                            <div class="step-box">
-                                <b>{exam.get('exam','')}</b><br>
-                                <small>By {exam.get('conducted_by','')} •
-                                {exam.get('eligibility','')}</small>
-                            </div>""", unsafe_allow_html=True)
-
-                    with col2:
-                        scholarships = local_data.get("state_scholarships", [])
-                        st.markdown(f"**🎓 Scholarships in {state}**")
-
-                        if scholarships:
-                            for s in scholarships:
-                                st.markdown(f"""
-                                <div class="step-box" style="border-left-color:#fcd34d">
-                                    <b>{s.get('name','')}</b><br>
-                                    <small>💰 {s.get('amount','')} •
-                                    {s.get('eligibility','')}</small>
-                                </div>""", unsafe_allow_html=True)
-                        else:
-                            st.markdown(
-                                '<div class="step-box">'
-                                'Check the National Scholarship Portal '
-                                '(scholarships.gov.in) for state-specific scholarships.'
-                                '</div>',
-                                unsafe_allow_html=True)
-
-                    st.caption(
-                        "⚠️ AI-generated local recommendations — "
-                        "verify details at official state board websites."
-                    )
 
         st.markdown("")
         if st.button("← Back to Recommendations"):
