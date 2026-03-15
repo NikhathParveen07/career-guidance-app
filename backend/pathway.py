@@ -67,15 +67,32 @@ def _call_groq(prompt, groq_key):
             json={
                 "model":       GROQ_MODEL,
                 "messages":    [{"role": "user", "content": prompt}],
-                "temperature": 0.3,   # Low temperature for consistent JSON
+                "temperature": 0.3,
                 "max_tokens":  1500
             },
             timeout=30
         )
-        return response.json()["choices"][0]["message"]["content"]
-    except Exception:
-        return None
 
+        # Show status for debugging
+        if response.status_code != 200:
+            import streamlit as st
+            st.error(f"Groq API error {response.status_code}: {response.text[:300]}")
+            return None
+
+        data = response.json()
+
+        # Check for API-level error
+        if "error" in data:
+            import streamlit as st
+            st.error(f"Groq error: {data['error']}")
+            return None
+
+        return data["choices"][0]["message"]["content"]
+
+    except Exception as e:
+        import streamlit as st
+        st.error(f"Groq exception: {str(e)}")
+        return None
 
 def _parse_json_response(raw_text):
     """
