@@ -147,24 +147,65 @@ def load_models():
 
 @st.cache_resource
 def load_svd_model():
-    from surprise import SVD, Dataset, Reader
-    from surprise.model_selection import train_test_split
+    """
+    Lightweight SVD using numpy only — no scikit-surprise needed.
+    Trains on interactions.csv and returns a predict() compatible object.
+    """
+    import numpy as np
 
     interactions_df = pd.read_csv("data/interactions.csv")
-    reader          = Reader(rating_scale=(1, 5))
-    data            = Dataset.load_from_df(
-        interactions_df[['student_id', 'career_id', 'rating']], reader
-    )
-    trainset, _  = train_test_split(data, test_size=0.2, random_state=42)
-    svd_model    = SVD(n_factors=50, random_state=42)
-    svd_model.fit(trainset)
-    return svd_model
+    students_df     = pd.read_csv("data/students.csv")
 
+    # Build user and item index maps
+    users    = interactions_df['student_id'].unique().tolist()
+    careers  = sorted(interactions_df['career_id'].unique().tolist())
+    user_idx = {u: i for i, u in enumerate(users)}
+    item_idx = {c: i for i, c in enumerate(careers)}
 
-@st.cache_data
-def load_careers():
-    return pd.read_csv("data/career_master_final.csv")
+    n_users   = len(users)
+    n_items   = len(careers)
+    n_factors = 20
 
+    # Build rating matrix
+    R = np.zeros((n_users, n_items))
+    for _, row in interactions_df.iterrows():
+        u = user_idx.get(row['student_id'])
+        i = item_idx.get(row['career_id'])
+        if u is not None and i is not None:
+            R[u][i] = row['rating']
+
+    # Normalise
+    mean_rating = R[R > 0].mean()
+    R_norm      = np.where(R > 0, R - mean_rating, 0)
+
+    # SVD decomposition
+    U, sigma, Vt = np.linalg.svd(R_norm, full_matrices=False)
+    k    = min(n_factors, len(sigma))
+    U_k  = U[:, :k]
+    S_k  = np.diag(sigma[:k])
+    Vt_k = Vt[:k, :]
+    R_pred = U_k @ S_k @ Vt_k + mean_rating
+
+    class LightSVD:
+        def __init__(self, R_pred, user_idx, item_idx, careers, mean_rating):
+            self.R_pred      = R_pred
+            self.user_idx    = user_idx
+            self.item_idx    = item_idx
+            self.careers     = careers
+            self.mean_rating = mean_rating
+
+        def predict(self, user_id, career_id):
+            u = self.user_idx.get(user_id)
+            i = self.item_idx.get(career_id)
+
+            class Pred:
+                def __init__(self, est): self.est = est
+
+            if u is None or i is None:
+                return Pred(self.mean_rating)
+            return Pred(float(np.clip(self.R_pred[u][i], 1, 5)))
+
+    return LightSVD(R_pred, user_idx, item_idx, careers, mean_rating)
 
 # ── RIASEC Quiz data ──────────────────────────────────────────
 RIASEC_QUESTIONS = [
