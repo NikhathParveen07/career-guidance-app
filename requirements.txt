@@ -1,7 +1,7 @@
-streamlit==1.35.0
-pandas==2.2.2
-numpy==1.26.4
-sentence-transformers==2.7.0
-pinecone==4.1.0
-supabase==2.4.0
-requests==2.31.0
+streamlit
+pandas
+numpy
+sentence-transformers
+pinecone
+supabase
+requests
