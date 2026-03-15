@@ -167,14 +167,26 @@ def main():
             col1, col2 = st.columns(2)
 
             with col1:
-                name   = st.text_input("Your Name",        placeholder="e.g. Riya Sharma")
-                stream = st.selectbox("Class 12 Stream",   ["Science","Commerce","Arts","Vocational"])
-                marks  = st.slider("Your Marks (%)",       40, 100, 75)
+                name   = st.text_input("Your Name", placeholder="e.g. Riya Sharma")
+                stream = st.selectbox("Class 12 Stream",
+                            ["Science", "Commerce", "Arts", "Vocational"])
+                marks  = st.slider("Your Marks (%)", 40, 100, 75)
 
             with col2:
-                city   = st.text_input("Your City",        placeholder="e.g. Hyderabad")
+                city   = st.text_input("Your City", placeholder="e.g. Kurnool")
+                state  = st.selectbox("Your State", [
+                    "Andhra Pradesh", "Arunachal Pradesh", "Assam", "Bihar",
+                    "Chhattisgarh", "Delhi", "Goa", "Gujarat", "Haryana",
+                    "Himachal Pradesh", "Jharkhand", "Karnataka", "Kerala",
+                    "Madhya Pradesh", "Maharashtra", "Manipur", "Meghalaya",
+                    "Mizoram", "Nagaland", "Odisha", "Punjab", "Rajasthan",
+                    "Sikkim", "Tamil Nadu", "Telangana", "Tripura",
+                    "Uttar Pradesh", "Uttarakhand", "West Bengal",
+                    "Jammu & Kashmir", "Ladakh", "Puducherry", "Chandigarh"
+                ])
                 budget = st.selectbox("Annual Education Budget",
-                            ["Under ₹50,000","₹50,000–₹1.5L","₹1.5L–₹5L","Above ₹5L"])
+                            ["Under ₹50,000", "₹50,000–₹1.5L",
+                             "₹1.5L–₹5L",    "Above ₹5L"])
                 query  = st.text_area("What are your interests?",
                             placeholder="e.g. I love biology, drawing, and helping people",
                             height=80)
@@ -191,9 +203,11 @@ def main():
                         "stream":     stream,
                         "marks":      marks,
                         "city":       city,
+                        "state":      state,
                         "budget":     budget,
                         "query":      query
                     }
+                    st.session_state.screen = 'profile'
                     st.session_state.screen = 'quiz'
                     st.rerun()
 
