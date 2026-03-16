@@ -7,8 +7,10 @@ import streamlit as st
 import sys
 import os
 
+# Make sure Python finds future_market.py in the same backend/ folder
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from future_market import get_future_market_data
+
+from future_market import get_future_market_data  # noqa: E402
 
 INDIAN_CITIES    = ["Bangalore", "Mumbai", "Delhi"]
 SERPAPI_ENDPOINT = "https://serpapi.com/search"
