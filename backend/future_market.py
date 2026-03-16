@@ -7,6 +7,7 @@ import requests
 import time
 import streamlit as st
 
+from future_market import get_future_market_data
 
 INDIAN_CITIES    = ["Bangalore", "Mumbai", "Delhi"]
 SERPAPI_ENDPOINT = "https://serpapi.com/search"
