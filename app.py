@@ -411,8 +411,7 @@ def main():
             grow_src    = salary.get("growth_source", "")
             curr_lpa    = salary.get("current_lpa", "")
 
-            st.markdown('<div class="mkt-card"><p class="mkt-card-label">What you will earn</p>', unsafe_allow_html=True)
-            c1, c2, c3 = st.columns(3)
+            st.markdown('<p class="mkt-card-label" style="margin-bottom:8px">WHAT YOU WILL EARN</p>', unsafe_allow_html=True)
 
             with c1:
                 st.markdown(f"""
@@ -443,7 +442,6 @@ def main():
                 </div>
                 """, unsafe_allow_html=True)
 
-            st.markdown('</div>', unsafe_allow_html=True)
 
             # ── Section 3: Cities + Companies ────────────────
             col1, col2 = st.columns(2)
