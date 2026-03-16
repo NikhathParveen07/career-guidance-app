@@ -11,7 +11,7 @@ from backend.collaborative  import load_svd_model
 from backend.hybrid_engine  import get_recommendations
 from backend.riasec         import RIASEC_QUESTIONS, RIASEC_LABELS, RIASEC_DESCRIPTIONS, compute_riasec_scores
 from backend.explainability import generate_explanation
-from backend.job_market     import fetch_job_market_data
+from backend.job_market     import fetch_full_market_data
 from backend.pathway        import fetch_career_pathway, fetch_local_recommendations
 
 
@@ -38,26 +38,35 @@ st.markdown("""
     .hero p  { font-size: 1.1rem; opacity: 0.85; margin-top: 0.5rem; color: white; }
 
     .career-card {
-        background: #1e2530;
-        border-radius: 12px;
-        padding: 1.2rem 1.5rem;
-        margin-bottom: 0.8rem;
+        background: #1e2530; border-radius: 12px;
+        padding: 1.2rem 1.5rem; margin-bottom: 0.8rem;
         box-shadow: 0 2px 8px rgba(0,0,0,0.3);
-        border-left: 4px solid #e94560;
-        color: #f0f0f0;
+        border-left: 4px solid #e94560; color: #f0f0f0;
     }
     .career-card span  { color: #f0f0f0 !important; }
     .career-card small { color: #aaaaaa !important; }
 
     .metric-box {
-        background: #1e2530;
-        border-radius: 10px;
-        padding: 1rem;
-        text-align: center;
-        border: 1px solid #2e3a4e;
+        background: #1e2530; border-radius: 10px;
+        padding: 1rem; text-align: center; border: 1px solid #2e3a4e;
     }
     .metric-box h3 { font-size: 1.6rem; color: #60a5fa; margin: 0; }
     .metric-box p  { font-size: 0.8rem; color: #aaaaaa; margin: 0; }
+
+    .future-box {
+        background: #1a2a1a; border-radius: 10px;
+        padding: 1rem; text-align: center; border: 1px solid #2a4a2a;
+    }
+    .future-box h3 { font-size: 1.4rem; color: #86efac; margin: 0; }
+    .future-box p  { font-size: 0.8rem; color: #aaaaaa; margin: 0; }
+
+    .demand-box {
+        background: #1e2530; border-radius: 10px;
+        padding: 1rem; margin: 0.4rem 0;
+        border-left: 3px solid #60a5fa; color: #d0d8e8;
+    }
+    .demand-box b     { color: #93c5fd; }
+    .demand-box small { color: #8899aa; }
 
     .badge {
         display: inline-block; padding: 3px 10px; border-radius: 20px;
@@ -69,33 +78,24 @@ st.markdown("""
     .badge-vocational { background: #3a2e1a; color: #fcd34d; }
 
     .why-box {
-        background: #2a2510;
-        border-radius: 8px;
-        padding: 0.8rem 1rem;
-        margin-top: 0.5rem;
-        border: 1px solid #5a4a20;
-        font-size: 0.85rem;
-        color: #e5d5a0;
-        line-height: 1.6;
+        background: #2a2510; border-radius: 8px;
+        padding: 0.8rem 1rem; margin-top: 0.5rem;
+        border: 1px solid #5a4a20; font-size: 0.85rem;
+        color: #e5d5a0; line-height: 1.6;
     }
     .why-box b { color: #fcd34d; }
 
     .step-box {
-        background: #1e2530;
-        border-radius: 8px;
-        padding: 0.8rem 1rem;
-        margin: 0.4rem 0;
+        background: #1e2530; border-radius: 8px;
+        padding: 0.8rem 1rem; margin: 0.4rem 0;
         border-left: 3px solid #60a5fa;
-        color: #d0d8e8;
-        line-height: 1.5;
+        color: #d0d8e8; line-height: 1.5;
     }
     .step-box b     { color: #93c5fd; }
     .step-box small { color: #8899aa; }
 
     .section-divider {
-        border: none;
-        border-top: 1px solid #2e3a4e;
-        margin: 1.5rem 0;
+        border: none; border-top: 1px solid #2e3a4e; margin: 1.5rem 0;
     }
 
     div[data-testid="stButton"] button {
@@ -113,6 +113,25 @@ STREAM_BADGE = {
     "Commerce":   "badge-commerce",
     "Arts":       "badge-arts",
     "Vocational": "badge-vocational"
+}
+
+# ── Demand impact colours ─────────────────────────────────────
+IMPACT_COLOR = {
+    "Very Positive": "#86efac",
+    "Positive":      "#60a5fa",
+    "Neutral":       "#aaaaaa",
+    "Negative":      "#fca5a5",
+    "Very Negative": "#f87171",
+    "Unknown":       "#aaaaaa"
+}
+
+TREND_ICON = {
+    "Rapidly Growing":   "🚀",
+    "Growing":           "📈",
+    "Stable":            "➡️",
+    "Declining":         "📉",
+    "Uncertain":         "❓",
+    "Insufficient Data": "🔍"
 }
 
 # ── Indian states list ────────────────────────────────────────
@@ -188,8 +207,7 @@ def main():
             col1, col2 = st.columns(2)
 
             with col1:
-                name   = st.text_input("Your Name",
-                            placeholder="e.g. Riya Sharma")
+                name   = st.text_input("Your Name", placeholder="e.g. Riya Sharma")
                 stream = st.selectbox("Class 12 Stream",
                             ["Science", "Commerce", "Arts", "Vocational"])
                 marks  = st.slider("Your Marks (%)", 40, 100, 75)
@@ -198,8 +216,7 @@ def main():
                              "₹1.5L–₹5L",    "Above ₹5L"])
 
             with col2:
-                city  = st.text_input("Your City",
-                            placeholder="e.g. Kurnool")
+                city  = st.text_input("Your City", placeholder="e.g. Kurnool")
                 state = st.selectbox("Your State", INDIAN_STATES)
                 query = st.text_area("What are your interests?",
                             placeholder="e.g. I love biology, drawing, and helping people",
@@ -271,21 +288,17 @@ def main():
 
         c1, c2, c3, c4 = st.columns(4)
         with c1:
-            st.markdown(
-                f'<div class="metric-box"><h3>{profile["stream"]}</h3><p>Your Stream</p></div>',
-                unsafe_allow_html=True)
+            st.markdown(f'<div class="metric-box"><h3>{profile["stream"]}</h3><p>Your Stream</p></div>',
+                        unsafe_allow_html=True)
         with c2:
-            st.markdown(
-                f'<div class="metric-box"><h3>{riasec["riasec_code"]}</h3><p>RIASEC Code</p></div>',
-                unsafe_allow_html=True)
+            st.markdown(f'<div class="metric-box"><h3>{riasec["riasec_code"]}</h3><p>RIASEC Code</p></div>',
+                        unsafe_allow_html=True)
         with c3:
-            st.markdown(
-                f'<div class="metric-box"><h3>{profile["marks"]}%</h3><p>Your Marks</p></div>',
-                unsafe_allow_html=True)
+            st.markdown(f'<div class="metric-box"><h3>{profile["marks"]}%</h3><p>Your Marks</p></div>',
+                        unsafe_allow_html=True)
         with c4:
-            st.markdown(
-                f'<div class="metric-box"><h3>{RIASEC_LABELS[riasec["top2"][0]]}</h3><p>Primary Personality</p></div>',
-                unsafe_allow_html=True)
+            st.markdown(f'<div class="metric-box"><h3>{RIASEC_LABELS[riasec["top2"][0]]}</h3><p>Primary Personality</p></div>',
+                        unsafe_allow_html=True)
 
         st.markdown("")
 
@@ -393,39 +406,131 @@ def main():
         tab1, tab2 = st.tabs(["📊 Job Market", "🗺️ Career Pathway"])
 
         # ══════════════════════════════════════════════════════
-        # TAB 1 — JOB MARKET
+        # TAB 1 — JOB MARKET (current + future)
         # ══════════════════════════════════════════════════════
         with tab1:
-            with st.spinner("🌐 Fetching live job data..."):
-                job = fetch_job_market_data(
-                    rec['career'], st.secrets["SERPAPI_KEY"]
+
+            with st.spinner("🌐 Fetching market data..."):
+                market = fetch_full_market_data(
+                    career_title = rec['career'],
+                    sector       = rec['sector'],
+                    stream       = profile['stream'],
+                    serpapi_key  = st.secrets["SERPAPI_KEY"],
+                    groq_key     = st.secrets["GROQ_API_KEY"],
+                    news_api_key = st.secrets.get("NEWS_API_KEY", None),
+                    supabase     = supabase
                 )
 
+            current = market["current"]
+            future  = market["future"]
+            salary  = future["salary"]
+            demand  = future["demand"]
+
+            # ── Section A: Today ──────────────────────────────
+            st.markdown("#### 📅 Today's Market")
             c1, c2, c3 = st.columns(3)
+
             with c1:
                 st.markdown(
-                    f'<div class="metric-box"><h3>{job["total"]}+</h3><p>Sample Openings</p></div>',
+                    f'<div class="metric-box"><h3>{current["total"]}+</h3>'
+                    f'<p>Sample Openings Today</p></div>',
                     unsafe_allow_html=True)
             with c2:
                 st.markdown(
-                    f'<div class="metric-box"><h3 style="font-size:1rem">{job["demand"]}</h3><p>Market Demand</p></div>',
+                    f'<div class="metric-box">'
+                    f'<h3 style="font-size:1rem">{current["demand"]}</h3>'
+                    f'<p>Current Activity</p></div>',
                     unsafe_allow_html=True)
             with c3:
                 st.markdown(
-                    f'<div class="metric-box"><h3 style="font-size:1rem">{job["salary"]}</h3><p>Salary Range</p></div>',
+                    f'<div class="metric-box">'
+                    f'<h3 style="font-size:1rem">{salary["current_range"]}</h3>'
+                    f'<p>Current Salary Range</p></div>',
                     unsafe_allow_html=True)
 
-            if job['companies']:
+            if current["companies"]:
                 st.markdown("")
-                st.markdown("**🏢 Top Hiring Companies:**")
-                st.markdown("  •  ".join(job['companies']))
+                st.markdown("**🏢 Currently Hiring:**")
+                st.markdown("  •  ".join(current["companies"]))
+
+            st.caption(
+                "⚠️ Current openings are a sample from 3 cities. "
+                "Actual market is larger."
+            )
+
+            # ── Section B: At Graduation ──────────────────────
+            st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
+            st.markdown(f"#### 🎓 At Your Graduation ({salary['graduation_year']})")
+
+            c1, c2, c3 = st.columns(3)
+
+            with c1:
+                st.markdown(
+                    f'<div class="future-box">'
+                    f'<h3>{salary["projected_range"]}</h3>'
+                    f'<p>Expected Salary at Graduation</p></div>',
+                    unsafe_allow_html=True)
+            with c2:
+                growth_pct = salary["growth_pct"]
+                st.markdown(
+                    f'<div class="future-box">'
+                    f'<h3>{growth_pct}</h3>'
+                    f'<p>Sector Annual Growth Rate</p></div>',
+                    unsafe_allow_html=True)
+            with c3:
+                trend_icon = TREND_ICON.get(demand["trend"], "➡️")
+                st.markdown(
+                    f'<div class="future-box">'
+                    f'<h3 style="font-size:1rem">'
+                    f'{trend_icon} {demand["trend"]}</h3>'
+                    f'<p>Demand Outlook</p></div>',
+                    unsafe_allow_html=True)
+
+            # ── Demand signal detail ──────────────────────────
+            st.markdown("")
+            impact_color = IMPACT_COLOR.get(demand["impact"], "#aaaaaa")
+
+            st.markdown(f"""
+            <div class="demand-box">
+                <b>📰 Market Intelligence</b>
+                <span style="float:right;color:{impact_color};font-weight:600">
+                    {demand["impact"]}
+                </span><br>
+                <small style="color:#d0d8e8">{demand["driver"]}</small>
+            </div>
+            """, unsafe_allow_html=True)
+
+            if demand.get("policy") and demand["policy"] != "None":
+                st.markdown(f"""
+                <div class="demand-box" style="border-left-color:#fcd34d">
+                    <b>🏛️ Policy Signal</b><br>
+                    <small style="color:#fcd34d">{demand["policy"]}</small>
+                </div>
+                """, unsafe_allow_html=True)
+
+            if demand.get("key_headline") and demand["key_headline"] != "No headlines found":
+                st.markdown(f"""
+                <div class="demand-box" style="border-left-color:#8899aa;opacity:0.8">
+                    <small>📌 Latest: {demand["key_headline"]}</small>
+                </div>
+                """, unsafe_allow_html=True)
+
+            # Cache and confidence info
+            cache_label = "📦 Cached" if demand.get("from_cache") else "🔴 Live"
+            confidence  = demand.get("confidence", "Medium")
+            updated     = demand.get("last_updated", "")
+            st.caption(
+                f"{cache_label} · Updated: {updated} · "
+                f"Confidence: {confidence} · "
+                f"Based on {demand.get('headlines_used', 0)} news sources · "
+                f"Salary growth: {salary['growth_source']}"
+            )
 
         # ══════════════════════════════════════════════════════
         # TAB 2 — CAREER PATHWAY
         # ══════════════════════════════════════════════════════
         with tab2:
 
-            # Fetch both data sources
             with st.spinner("🤖 Generating career roadmap..."):
                 pathway = fetch_career_pathway(
                     rec['career'], rec['stream'], rec['sector'],
@@ -444,9 +549,6 @@ def main():
                 st.warning("Could not generate pathway. Please try again.")
 
             else:
-                # ══════════════════════════════════════════════
-                # SECTION 1 — NATIONAL (left) + STATE (right)
-                # ══════════════════════════════════════════════
                 col1, col2 = st.columns(2)
 
                 # ── Left: National ────────────────────────────
@@ -482,72 +584,44 @@ def main():
                     if local_data:
                         st.markdown(f"**🏛️ Your State — {state}**")
 
-                        # State entrance exams
                         st.markdown("")
-                        st.markdown(f"**📝 State Entrance Exams**")
-                        state_exams = local_data.get("state_exams", [])
-                        if state_exams:
-                            for exam in state_exams:
-                                st.markdown(f"""
-                                <div class="step-box" style="border-left-color:#e94560">
-                                    <b>{exam.get('exam','')}</b><br>
-                                    <small>By {exam.get('conducted_by','')} •
-                                    {exam.get('eligibility','')}</small>
-                                </div>""", unsafe_allow_html=True)
-                        else:
-                            st.markdown(
-                                '<div class="step-box" style="opacity:0.6">'
-                                'No state-specific exams found for this career.</div>',
-                                unsafe_allow_html=True)
+                        st.markdown("**📝 State Entrance Exams**")
+                        for exam in local_data.get("state_exams", []):
+                            st.markdown(f"""
+                            <div class="step-box" style="border-left-color:#e94560">
+                                <b>{exam.get('exam','')}</b><br>
+                                <small>By {exam.get('conducted_by','')} •
+                                {exam.get('eligibility','')}</small>
+                            </div>""", unsafe_allow_html=True)
 
-                        # State colleges
                         st.markdown("")
                         st.markdown(f"**🏫 Colleges in {state}**")
-                        state_colleges = local_data.get("state_colleges", [])
-                        if state_colleges:
-                            for college in state_colleges:
-                                ctype = college.get('type', '')
-                                st.markdown(f"""
-                                <div class="step-box" style="border-left-color:#86efac">
-                                    <b>{college.get('name','')}</b><br>
-                                    <small>{college.get('city','')} •
-                                    <span style="color:#86efac">{ctype}</span></small>
-                                </div>""", unsafe_allow_html=True)
-                        else:
-                            st.markdown(
-                                '<div class="step-box" style="opacity:0.6">'
-                                'No state colleges found for this career.</div>',
-                                unsafe_allow_html=True)
+                        for college in local_data.get("state_colleges", []):
+                            ctype = college.get('type', '')
+                            st.markdown(f"""
+                            <div class="step-box" style="border-left-color:#86efac">
+                                <b>{college.get('name','')}</b><br>
+                                <small>{college.get('city','')} •
+                                <span style="color:#86efac">{ctype}</span></small>
+                            </div>""", unsafe_allow_html=True)
 
-                        # State scholarships
-                        st.markdown("")
-                        st.markdown(f"**🎓 Scholarships in {state}**")
-                        scholarships = local_data.get("state_scholarships", [])
-                        if scholarships:
-                            for s in scholarships:
+                        if local_data.get("state_scholarships"):
+                            st.markdown("")
+                            st.markdown(f"**🎓 Scholarships in {state}**")
+                            for s in local_data.get("state_scholarships", []):
                                 st.markdown(f"""
                                 <div class="step-box" style="border-left-color:#fcd34d">
                                     <b>{s.get('name','')}</b><br>
                                     <small>💰 {s.get('amount','')} •
                                     {s.get('eligibility','')}</small>
                                 </div>""", unsafe_allow_html=True)
-                        else:
-                            st.markdown(
-                                '<div class="step-box" style="opacity:0.6">'
-                                'Check scholarships.gov.in for state scholarships.</div>',
-                                unsafe_allow_html=True)
                     else:
-                        st.markdown(f"**🏛️ Your State — {state}**")
-                        st.info("Could not load state-specific data. Please try again.")
+                        st.info("Could not load state-specific data.")
 
-                # ══════════════════════════════════════════════
-                # SECTION 2 — TIMELINE (left) + PROGRESSION & SALARY (right)
-                # ══════════════════════════════════════════════
+                # ── Bottom: Timeline + Progression ───────────
                 st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
-
                 col3, col4 = st.columns(2)
 
-                # ── Left: Timeline ────────────────────────────
                 with col3:
                     st.markdown("**📅 Year-by-Year Timeline**")
                     for t in pathway.get("timeline", []):
@@ -558,11 +632,9 @@ def main():
                             f'</div>',
                             unsafe_allow_html=True)
 
-                # ── Right: Progression + Salary ───────────────
                 with col4:
                     st.markdown("**📈 Career Progression**")
-                    prog = pathway.get("career_progression", [])
-                    for level in prog:
+                    for level in pathway.get("career_progression", []):
                         st.markdown(
                             f'<div class="step-box">→ {level}</div>',
                             unsafe_allow_html=True)
@@ -571,12 +643,11 @@ def main():
                     sal = pathway.get("avg_starting_salary", "")
                     st.markdown(
                         f'<div class="metric-box">'
-                        f'<h3 style="font-size:1.2rem">💰 {sal}</h3>'
+                        f'<h3 style="font-size:1.1rem">💰 {sal}</h3>'
                         f'<p>Average Starting Salary</p>'
                         f'</div>',
                         unsafe_allow_html=True)
 
-                st.markdown("")
                 st.caption(
                     "⚠️ AI-generated roadmap — "
                     "verify exam and college details at official websites."
