@@ -1,11 +1,12 @@
 # ============================================
 # backend/job_market.py
-# Fetch live Indian job market data via SerpAPI
-# Results cached in session state to minimise API calls
+# Current job market data via SerpAPI
+# + Future market data via future_market.py
 # ============================================
 import requests
 import time
 import streamlit as st
+from backend.future_market import get_future_market_data
 
 
 INDIAN_CITIES    = ["Bangalore", "Mumbai", "Delhi"]
@@ -13,42 +14,25 @@ SERPAPI_ENDPOINT = "https://serpapi.com/search"
 
 
 def _get_demand_level(total_openings):
-    """
-    Classify market demand based on number of sample job listings.
-
-    Note: SerpAPI returns max 10 results per city query.
-    So a total of 30 = 10 per city across 3 cities.
-    Actual national market is larger — this is a sample indicator.
-    """
+    """Classify current market activity from job count sample."""
     if total_openings >= 15:
-        return "🔥 High Demand"
+        return "🔥 High"
     elif total_openings >= 7:
-        return "📈 Moderate Demand"
+        return "📈 Moderate"
     elif total_openings > 0:
-        return "📊 Niche Market"
+        return "📊 Niche"
     else:
         return "🔍 Limited Data"
 
 
-def fetch_job_market_data(career_title, serpapi_key):
+def fetch_current_job_data(career_title, serpapi_key):
     """
-    Fetch live job market data for a career from Indian cities.
+    Fetch current job listings snapshot from SerpAPI Google Jobs.
+    Cached in session state for the session duration.
 
-    Strategy:
-    1. Check session state cache — return immediately if found
-    2. Query SerpAPI Google Jobs across 3 Indian cities
-    3. Extract job count, company names, salary data
-    4. Cache result in session state for the session duration
-    5. On API limit or error, return a graceful empty result
-
-    Args:
-        career_title — job title to search for
-        serpapi_key  — SerpAPI API key from Streamlit secrets
-
-    Returns:
-        dict with keys: total, demand, companies, salary
+    Returns current market snapshot only.
+    Salary string is passed to future_market.py for projection.
     """
-    # Check session cache first — avoids re-querying same career
     cache_key = f"job_{career_title}"
     if cache_key in st.session_state:
         return st.session_state[cache_key]
@@ -71,33 +55,75 @@ def fetch_job_market_data(career_title, serpapi_key):
                 timeout=10
             )
             data = response.json()
-
-            # Detect API limit or error
             if "error" in data:
                 break
-
             jobs = data.get("jobs_results", [])
             all_jobs.extend(jobs)
-
             for job in jobs:
                 if job.get("company_name"):
                     companies.append(job["company_name"])
                 salary = job.get("detected_extensions", {}).get("salary")
                 if salary:
                     salaries.append(salary)
-
-            time.sleep(0.5)  # Respect SerpAPI rate limits
-
+            time.sleep(0.5)
         except Exception:
-            continue  # Skip failed city, try next
+            continue
 
     result = {
-        "total":     len(all_jobs),
-        "demand":    _get_demand_level(len(all_jobs)),
-        "companies": list(dict.fromkeys(companies))[:5],  # unique, preserve order
-        "salary":    salaries[0] if salaries else "Not available"
+        "total":          len(all_jobs),
+        "demand":         _get_demand_level(len(all_jobs)),
+        "companies":      list(dict.fromkeys(companies))[:5],
+        "salary_string":  salaries[0] if salaries else "Not available"
     }
-
-    # Save to session cache
     st.session_state[cache_key] = result
     return result
+
+
+def fetch_full_market_data(career_title, sector, stream,
+                           serpapi_key, groq_key,
+                           news_api_key, supabase):
+    """
+    Combined market intelligence function.
+
+    Step 1 — Fetch current snapshot via SerpAPI:
+        Total job listings, hiring companies, current salary string
+
+    Step 2 — Fetch future outlook via future_market.py:
+        Salary projection at graduation (World Bank growth rate)
+        Demand signal (Google News RSS + NewsAPI + Groq LLM)
+
+    The SerpAPI salary string from Step 1 is passed directly
+    into Step 2 as the current salary baseline — no extra
+    API or card required.
+
+    Args:
+        career_title  — career name
+        sector        — career sector
+        stream        — student stream
+        serpapi_key   — SerpAPI key
+        groq_key      — Groq API key
+        news_api_key  — NewsAPI key (can be None — RSS still works)
+        supabase      — Supabase client
+
+    Returns:
+        dict with "current" and "future" keys
+    """
+    # Step 1 — Current snapshot
+    current = fetch_current_job_data(career_title, serpapi_key)
+
+    # Step 2 — Future outlook
+    # Pass SerpAPI salary string as current salary baseline
+    future = get_future_market_data(
+        career_title          = career_title,
+        sector                = sector,
+        stream                = stream,
+        serpapi_salary_string = current["salary_string"],
+        groq_key              = groq_key,
+        news_api_key          = news_api_key,
+        supabase              = supabase
+    )
+
+    return {
+        "current": current,
+        "future":  future
+    }
