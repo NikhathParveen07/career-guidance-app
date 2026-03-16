@@ -355,7 +355,7 @@ def main():
 
         tab1, tab2 = st.tabs(["📊 Job Market", "🗺️ Career Pathway"])
 
-        # ══════════════════════════════════════════════════════
+       # ══════════════════════════════════════════════════════
         # TAB 1 — JOB MARKET
         # ══════════════════════════════════════════════════════
         with tab1:
@@ -385,6 +385,18 @@ def main():
             comp_level  = competition.get("level", "Moderate")
             comp_badge  = COMPETITION_BADGE.get(comp_level, "badge-moderate")
 
+            grad_year  = salary.get("graduation_year", "")
+            curr_low   = salary.get("current_low", "")
+            curr_high  = salary.get("current_high", "")
+            proj_low   = salary.get("projected_low", "")
+            proj_high  = salary.get("projected_high", "")
+            mid_low    = salary.get("mid_low", "")
+            mid_high   = salary.get("mid_high", "")
+            growth_pct = salary.get("growth_pct", "")
+            sal_src    = salary.get("salary_source", "")
+            grow_src   = salary.get("growth_source", "")
+            curr_lpa   = salary.get("current_lpa", "")
+
             # ── Section 1: Career Outlook ─────────────────────
             gov_badge = '<span class="badge-pill badge-govbacked">Government backed</span>' \
                         if outlook.get("government_backed") else ""
@@ -399,19 +411,11 @@ def main():
             """, unsafe_allow_html=True)
 
             # ── Section 2: Salary ─────────────────────────────
-            grad_year   = salary.get("graduation_year", "")
-            curr_low    = salary.get("current_low", "")
-            curr_high   = salary.get("current_high", "")
-            proj_low    = salary.get("projected_low", "")
-            proj_high   = salary.get("projected_high", "")
-            mid_low     = salary.get("mid_low", "")
-            mid_high    = salary.get("mid_high", "")
-            growth_pct  = salary.get("growth_pct", "")
-            sal_src     = salary.get("salary_source", "")
-            grow_src    = salary.get("growth_source", "")
-            curr_lpa    = salary.get("current_lpa", "")
-
-            st.markdown('<p class="mkt-card-label" style="margin-bottom:8px">WHAT YOU WILL EARN</p>', unsafe_allow_html=True)
+            st.markdown(
+                '<p class="mkt-card-label" style="margin-bottom:8px">WHAT YOU WILL EARN</p>',
+                unsafe_allow_html=True
+            )
+            c1, c2, c3 = st.columns(3)
 
             with c1:
                 st.markdown(f"""
@@ -441,7 +445,6 @@ def main():
                     <p class="sal-explain">Engineers with 5 years experience earn 2–2.5x their starting salary</p>
                 </div>
                 """, unsafe_allow_html=True)
-
 
             # ── Section 3: Cities + Companies ────────────────
             col1, col2 = st.columns(2)
@@ -485,7 +488,7 @@ def main():
                 </div>
                 """, unsafe_allow_html=True)
 
-            # Footer
+            # ── Footer ────────────────────────────────────────
             cache_label = "📦 Cached" if intel.get("from_cache") else "🔴 Live"
             st.caption(
                 f"{cache_label} · Updated: {intel.get('last_updated','')} · "
