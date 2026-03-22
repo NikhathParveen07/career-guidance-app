@@ -1,16 +1,20 @@
 # ============================================
 # backend/onet_loader.py
-# Fetches all occupations from O*NET Web Services API
-# Uses API key as HTTP Basic Auth username (O*NET v2.0)
-# Maps RIASEC, skills, sector, and Indian stream
-# Caches in Supabase for 30 days
+# Fetches all occupations from O*NET Web Services API v2.0
+#
+# Key facts from O*NET v2.0 documentation:
+#   Base URL : https://api-v2.onetcenter.org
+#   Auth     : X-API-Key header (NOT Basic Auth)
+#   Format   : Accept: application/json
+#
+# Caches results in Supabase for 30 days
 # ============================================
 import requests
 import time
 from datetime import datetime, timezone
 
 
-ONET_BASE_URL = "https://services.onetcenter.org/ws"
+ONET_BASE_URL = "https://api-v2.onetcenter.org"
 CACHE_DAYS    = 30
 
 
@@ -54,24 +58,21 @@ INTEREST_TO_RIASEC = {
 }
 
 
-def _headers():
-    """Base headers for O*NET API requests."""
-    return {"Accept": "application/json"}
-
-
-def _auth(api_key):
+def _headers(api_key):
     """
-    O*NET v2.0 uses HTTP Basic Auth with:
-    - username = your API key
-    - password = empty string
+    O*NET v2.0 authentication uses X-API-Key header.
+    Keys are not accepted in query string or POST body.
     """
-    from requests.auth import HTTPBasicAuth
-    return HTTPBasicAuth(api_key, "")
+    return {
+        "Accept":    "application/json",
+        "X-API-Key": api_key
+    }
 
 
 def _fetch_all_occupations(api_key):
     """
-    Fetch complete list of O*NET occupations.
+    Fetch complete list of O*NET occupations using v2.0 API.
+    Endpoint: GET /online/occupations
     Returns list of {code, title} dicts.
     """
     occupations = []
@@ -81,21 +82,26 @@ def _fetch_all_occupations(api_key):
         try:
             r = requests.get(
                 f"{ONET_BASE_URL}/online/occupations",
-                auth=_auth(api_key), headers=_headers(),
+                headers=_headers(api_key),
                 params={"start": start, "end": start + 99},
                 timeout=30
             )
 
             if r.status_code == 401:
-                print(f"O*NET 401 Unauthorized — check your API key")
+                print(f"O*NET 401 Unauthorized — check your API key in Streamlit secrets")
                 break
+
+            if r.status_code == 429:
+                print("O*NET rate limit hit — waiting 500ms")
+                time.sleep(0.5)
+                continue
 
             if r.status_code != 200:
-                print(f"O*NET list error {r.status_code}: {r.text[:200]}")
+                print(f"O*NET list error {r.status_code}: {r.text[:300]}")
                 break
 
-            data  = r.json()
-            occs  = data.get("occupation", [])
+            data = r.json()
+            occs = data.get("occupation", [])
 
             if not occs:
                 break
@@ -123,13 +129,26 @@ def _fetch_all_occupations(api_key):
 
 
 def _fetch_interests(code, api_key):
-    """Fetch RIASEC interest scores. Returns (primary, secondary)."""
+    """
+    Fetch RIASEC interest scores for one occupation.
+    Endpoint: GET /online/occupations/{code}/interests
+    Returns (primary_riasec, secondary_riasec)
+    """
     try:
         r = requests.get(
             f"{ONET_BASE_URL}/online/occupations/{code}/interests",
-            auth=_auth(api_key), headers=_headers(),
+            headers=_headers(api_key),
             timeout=15
         )
+
+        if r.status_code == 429:
+            time.sleep(0.5)
+            r = requests.get(
+                f"{ONET_BASE_URL}/online/occupations/{code}/interests",
+                headers=_headers(api_key),
+                timeout=15
+            )
+
         if r.status_code != 200:
             return "R", "I"
 
@@ -151,13 +170,26 @@ def _fetch_interests(code, api_key):
 
 
 def _fetch_skills(code, api_key):
-    """Fetch top 6 skills for one occupation."""
+    """
+    Fetch top 6 skills for one occupation.
+    Endpoint: GET /online/occupations/{code}/skills
+    Returns list of skill name strings.
+    """
     try:
         r = requests.get(
             f"{ONET_BASE_URL}/online/occupations/{code}/skills",
-            auth=_auth(api_key), headers=_headers(),
+            headers=_headers(api_key),
             timeout=15
         )
+
+        if r.status_code == 429:
+            time.sleep(0.5)
+            r = requests.get(
+                f"{ONET_BASE_URL}/online/occupations/{code}/skills",
+                headers=_headers(api_key),
+                timeout=15
+            )
+
         if r.status_code != 200:
             return []
 
@@ -177,13 +209,26 @@ def _fetch_skills(code, api_key):
 
 
 def _fetch_job_family(code, api_key):
-    """Fetch job family title for stream mapping."""
+    """
+    Fetch job family for one occupation for stream mapping.
+    Endpoint: GET /online/occupations/{code}
+    Returns job family title string.
+    """
     try:
         r = requests.get(
             f"{ONET_BASE_URL}/online/occupations/{code}",
-            auth=_auth(api_key), headers=_headers(),
+            headers=_headers(api_key),
             timeout=15
         )
+
+        if r.status_code == 429:
+            time.sleep(0.5)
+            r = requests.get(
+                f"{ONET_BASE_URL}/online/occupations/{code}",
+                headers=_headers(api_key),
+                timeout=15
+            )
+
         if r.status_code != 200:
             return ""
 
@@ -294,14 +339,14 @@ def fetch_all_onet_careers(api_key, supabase):
 
     Flow:
     1. Check Supabase cache (valid 30 days) — return if fresh
-    2. Fetch all occupation codes from O*NET
+    2. Fetch all occupation codes from O*NET v2.0 API
     3. For each occupation fetch interests, skills, job family
     4. Map to Indian stream and sector
     5. Save to Supabase cache
     6. Return as list of career dicts
 
     Args:
-        api_key  — O*NET API key from Streamlit secrets
+        api_key  — O*NET API key from Streamlit secrets (ONET_API_KEY)
         supabase — Supabase client
 
     Returns list of dicts with keys:
@@ -312,7 +357,7 @@ def fetch_all_onet_careers(api_key, supabase):
     try:
         cached = supabase.table("onet_careers").select("*").execute()
         if cached.data and len(cached.data) > 100:
-            first     = cached.data[0]
+            first      = cached.data[0]
             cached_str = first.get("cached_at", "2000-01-01T00:00:00+00:00")
             cached_str = cached_str.replace("Z", "+00:00")
             cached_at  = datetime.fromisoformat(cached_str)
@@ -323,17 +368,15 @@ def fetch_all_onet_careers(api_key, supabase):
     except Exception as e:
         print(f"Cache check error: {e}")
 
-    print("Fetching all occupations from O*NET API...")
+    print("Fetching all occupations from O*NET API v2.0...")
 
-    # Fetch all occupation codes
     occupations = _fetch_all_occupations(api_key)
     print(f"Total occupations found: {len(occupations)}")
 
     if not occupations:
-        print("No occupations returned — check your O*NET API key")
+        print("No occupations returned — check ONET_API_KEY in Streamlit secrets")
         return []
 
-    # Fetch details for each occupation
     careers = []
     total   = len(occupations)
 
@@ -362,7 +405,7 @@ def fetch_all_onet_careers(api_key, supabase):
             "cached_at":        datetime.now(timezone.utc).isoformat()
         })
 
-        time.sleep(0.1)  # Respect O*NET rate limits
+        time.sleep(0.1)
 
     print(f"Fetched details for {len(careers)} careers")
 
