@@ -1,7 +1,7 @@
 # ============================================
 # backend/onet_loader.py
 # Fetches all occupations from O*NET Web Services API
-# Uses API key authentication (Bearer token)
+# Uses API key as HTTP Basic Auth username (O*NET v2.0)
 # Maps RIASEC, skills, sector, and Indian stream
 # Caches in Supabase for 30 days
 # ============================================
@@ -54,12 +54,19 @@ INTEREST_TO_RIASEC = {
 }
 
 
-def _headers(api_key):
-    """O*NET API key authentication via Authorization header."""
-    return {
-        "Accept":        "application/json",
-        "Authorization": f"Bearer {api_key}"
-    }
+def _headers():
+    """Base headers for O*NET API requests."""
+    return {"Accept": "application/json"}
+
+
+def _auth(api_key):
+    """
+    O*NET v2.0 uses HTTP Basic Auth with:
+    - username = your API key
+    - password = empty string
+    """
+    from requests.auth import HTTPBasicAuth
+    return HTTPBasicAuth(api_key, "")
 
 
 def _fetch_all_occupations(api_key):
@@ -74,7 +81,7 @@ def _fetch_all_occupations(api_key):
         try:
             r = requests.get(
                 f"{ONET_BASE_URL}/online/occupations",
-                headers=_headers(api_key),
+                auth=_auth(api_key), headers=_headers(),
                 params={"start": start, "end": start + 99},
                 timeout=30
             )
@@ -120,7 +127,7 @@ def _fetch_interests(code, api_key):
     try:
         r = requests.get(
             f"{ONET_BASE_URL}/online/occupations/{code}/interests",
-            headers=_headers(api_key),
+            auth=_auth(api_key), headers=_headers(),
             timeout=15
         )
         if r.status_code != 200:
@@ -148,7 +155,7 @@ def _fetch_skills(code, api_key):
     try:
         r = requests.get(
             f"{ONET_BASE_URL}/online/occupations/{code}/skills",
-            headers=_headers(api_key),
+            auth=_auth(api_key), headers=_headers(),
             timeout=15
         )
         if r.status_code != 200:
@@ -174,7 +181,7 @@ def _fetch_job_family(code, api_key):
     try:
         r = requests.get(
             f"{ONET_BASE_URL}/online/occupations/{code}",
-            headers=_headers(api_key),
+            auth=_auth(api_key), headers=_headers(),
             timeout=15
         )
         if r.status_code != 200:
