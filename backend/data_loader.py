@@ -2,7 +2,6 @@
 # backend/data_loader.py
 # Loads career data from O*NET API via onet_loader
 # Falls back to CSV if O*NET unavailable
-# Also loads sentence model, Pinecone, Supabase
 # ============================================
 import os
 import sys
@@ -27,27 +26,24 @@ def load_supabase():
     )
 
 
-@st.cache_data(ttl=86400)  # refresh every 24 hours
+@st.cache_data(ttl=86400)
 def load_careers():
     """
     Load career data from O*NET API via Supabase cache.
-    Falls back to local CSV if O*NET credentials unavailable.
+    Falls back to local CSV if O*NET API key unavailable.
 
     Returns pandas DataFrame with columns:
-        onet_code, job_title, sector, 12th_stream,
+        onet_code, job_title, sector, stream,
         primary_riasec, secondary_riasec, core_skills
     """
-    # Try O*NET via Supabase
     try:
-        username = st.secrets.get("ONET_USERNAME", None)
-        password = st.secrets.get("ONET_PASSWORD", None)
+        api_key  = st.secrets.get("ONET_API_KEY", None)
         supabase = load_supabase()
 
-        if username and password:
-            careers = fetch_all_onet_careers(username, password, supabase)
+        if api_key:
+            careers = fetch_all_onet_careers(api_key, supabase)
             if careers and len(careers) > 10:
                 df = pd.DataFrame(careers)
-                # Rename for compatibility with rest of system
                 if "12th_stream" in df.columns:
                     df = df.rename(columns={"12th_stream": "stream"})
                 if "onet_code" in df.columns and "nco_id" not in df.columns:
