@@ -29,7 +29,7 @@ def get_collab_scores(user_id, n_careers, svd_model):
     """
     raw_scores = {}
     for cid in range(n_careers):
-        raw_scores[cid] = svd_model.predict(user_id, cid).est
+        raw_scores[cid] = svd_model.predict(user_id, cid)
 
     max_s = max(raw_scores.values())
     min_s = min(raw_scores.values())
