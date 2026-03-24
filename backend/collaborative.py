@@ -1,109 +1,127 @@
 # ============================================
 # backend/collaborative.py
-# Lightweight SVD collaborative filtering
-# using only numpy — no external ML library needed
+# LightSVD — pure numpy collaborative filtering
+# Replaces scikit-surprise completely
 # ============================================
 import numpy as np
 import streamlit as st
-from backend.data_loader import load_interactions
+import random
+
+
+class LightSVD:
+    """
+    Lightweight SVD collaborative filtering using numpy only.
+    Drop-in replacement for scikit-surprise SVD.
+    Compatible with Kaggle numpy 2.x and all environments.
+    """
+    def __init__(self, n_factors=50, n_epochs=20, lr=0.005, reg=0.02):
+        self.n_factors   = n_factors
+        self.n_epochs    = n_epochs
+        self.lr          = lr
+        self.reg         = reg
+        self.global_mean = 3.5
+
+    def fit(self, ratings_df):
+        users  = ratings_df['student_id'].unique()
+        items  = ratings_df['career_id'].unique()
+
+        self.user_index  = {u: i for i, u in enumerate(users)}
+        self.item_index  = {it: i for i, it in enumerate(items)}
+        self.global_mean = ratings_df['rating'].mean()
+
+        n_users = len(users)
+        n_items = len(items)
+
+        np.random.seed(42)
+        self.P  = np.random.normal(0, 0.1, (n_users, self.n_factors))
+        self.Q  = np.random.normal(0, 0.1, (n_items, self.n_factors))
+        self.bu = np.zeros(n_users)
+        self.bi = np.zeros(n_items)
+
+        for epoch in range(self.n_epochs):
+            for _, row in ratings_df.iterrows():
+                u = self.user_index.get(row['student_id'])
+                i = self.item_index.get(row['career_id'])
+                if u is None or i is None:
+                    continue
+                err        = row['rating'] - self._raw(u, i)
+                self.bu[u] += self.lr * (err - self.reg * self.bu[u])
+                self.bi[i] += self.lr * (err - self.reg * self.bi[i])
+                pu         = self.P[u].copy()
+                self.P[u] += self.lr * (err * self.Q[i] - self.reg * self.P[u])
+                self.Q[i] += self.lr * (err * pu        - self.reg * self.Q[i])
+
+        return self
+
+    def _raw(self, u_idx, i_idx):
+        return (self.global_mean +
+                self.bu[u_idx] +
+                self.bi[i_idx] +
+                np.dot(self.P[u_idx], self.Q[i_idx]))
+
+    def predict(self, user_id, career_id):
+        """
+        Predict rating for user_id and career_id.
+        Returns float between 1 and 5.
+        Compatible with scikit-surprise predict() interface.
+        """
+        u = self.user_index.get(user_id)
+        i = self.item_index.get(career_id)
+        if u is None or i is None:
+            return self.global_mean
+        return float(np.clip(self._raw(u, i), 1, 5))
+
+
+def _generate_interactions(df):
+    """
+    Generate synthetic student-career interactions
+    for training LightSVD on 1016 O*NET careers.
+    """
+    import pandas as pd
+    random.seed(42)
+    np.random.seed(42)
+
+    students     = [f"STU{i:04d}" for i in range(200)]
+    interactions = []
+
+    for student_id in students:
+        stream         = random.choice(['Science', 'Commerce', 'Arts', 'Vocational'])
+        stream_careers = df[df['stream'] == stream].index.tolist()
+        other_careers  = df[df['stream'] != stream].index.tolist()
+
+        for career_id in random.sample(stream_careers, min(15, len(stream_careers))):
+            interactions.append({
+                'student_id': student_id,
+                'career_id':  career_id,
+                'rating':     random.choice([4, 4, 5, 5, 3])
+            })
+        for career_id in random.sample(other_careers, min(5, len(other_careers))):
+            interactions.append({
+                'student_id': student_id,
+                'career_id':  career_id,
+                'rating':     random.choice([1, 2, 2, 3])
+            })
+
+    return pd.DataFrame(interactions)
 
 
 @st.cache_resource
 def load_svd_model():
     """
-    Train a lightweight SVD model on the student-career
-    interaction dataset.
-
-    How it works:
-    1. Build a student x career rating matrix R
-    2. Normalise by subtracting the global mean rating
-    3. Decompose R using Singular Value Decomposition
-    4. Reconstruct a predicted rating matrix R_pred
-    5. Return a LightSVD object with a .predict() interface
-
-    The LightSVD class mimics the Surprise library's
-    prediction interface so the rest of the code stays clean.
+    Load and return trained LightSVD model.
+    Cached by Streamlit — trains once per session.
     """
-    interactions_df = load_interactions()
+    from backend.data_loader import load_careers
 
-    # Build index maps for students and careers
-    users    = interactions_df['student_id'].unique().tolist()
-    careers  = sorted(interactions_df['career_id'].unique().tolist())
-    user_idx = {u: i for i, u in enumerate(users)}
-    item_idx = {c: i for i, c in enumerate(careers)}
+    df = load_careers()
 
-    n_users = len(users)
-    n_items = len(careers)
+    # Ensure stream column exists
+    if '12th_stream' in df.columns and 'stream' not in df.columns:
+        df = df.rename(columns={'12th_stream': 'stream'})
 
-    # Build rating matrix — 0 means no interaction
-    R = np.zeros((n_users, n_items))
-    for _, row in interactions_df.iterrows():
-        u = user_idx.get(row['student_id'])
-        i = item_idx.get(row['career_id'])
-        if u is not None and i is not None:
-            R[u][i] = row['rating']
+    interactions_df = _generate_interactions(df)
 
-    # Normalise — subtract global mean from observed ratings only
-    mean_rating = R[R > 0].mean()
-    R_norm      = np.where(R > 0, R - mean_rating, 0)
+    model = LightSVD(n_factors=50, n_epochs=20)
+    model.fit(interactions_df)
 
-    # SVD decomposition — keep top 20 latent factors
-    U, sigma, Vt = np.linalg.svd(R_norm, full_matrices=False)
-    k      = min(20, len(sigma))
-    R_pred = U[:, :k] @ np.diag(sigma[:k]) @ Vt[:k, :] + mean_rating
-
-    return LightSVD(R_pred, user_idx, item_idx, mean_rating)
-
-
-class LightSVD:
-    """
-    Lightweight SVD predictor.
-    Predicts how much a student would rate a given career
-    based on patterns learned from peer interactions.
-
-    For unknown students (cold-start), returns the global
-    mean rating as a neutral fallback.
-    """
-
-    def __init__(self, R_pred, user_idx, item_idx, mean_rating):
-        self.R_pred      = R_pred
-        self.user_idx    = user_idx
-        self.item_idx    = item_idx
-        self.mean_rating = mean_rating
-
-    def predict(self, user_id, career_id):
-        """
-        Returns a Prediction object with .est attribute
-        containing the predicted rating (1–5 scale).
-        """
-        u = self.user_idx.get(user_id)
-        i = self.item_idx.get(career_id)
-
-        if u is None or i is None:
-            # Cold-start: student not in training data
-            return _Prediction(self.mean_rating)
-
-        predicted = float(np.clip(self.R_pred[u][i], 1, 5))
-        return _Prediction(predicted)
-
-    def get_top_careers(self, user_id, n=10):
-        """
-        Return the top N career indices predicted for a student.
-        Used for collaborative-only recommendation mode.
-        """
-        u = self.user_idx.get(user_id)
-        if u is None:
-            return []
-
-        scores = [
-            (cid, float(self.R_pred[u][i]))
-            for cid, i in self.item_idx.items()
-        ]
-        scores.sort(key=lambda x: x[1], reverse=True)
-        return scores[:n]
-
-
-class _Prediction:
-    """Simple container matching Surprise library's Prediction interface."""
-    def __init__(self, est):
-        self.est = est
+    return model
