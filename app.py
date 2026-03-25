@@ -309,7 +309,7 @@ def main():
                     <div style="text-align:right">
                         <span style="font-size:1.3rem;font-weight:700;color:#60a5fa">{int(rec['final_score']*100)}%</span><br>
                         <small style="color:#888">match score</small>
-                    </div>
+                    </div> 
                 </div>
                 <div style="margin-top:0.5rem">
                     <span class="badge {badge}">{rec['stream']}</span>
