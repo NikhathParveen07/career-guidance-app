@@ -10,7 +10,56 @@ from backend.content_filter import (
     get_riasec_boost,
     apply_cross_stream_penalty
 )
+import requests
 
+def expand_query(query, groq_key):
+    """
+    Expand vague student interest queries into richer semantic descriptions.
+    Uses Groq LLM to add relevant career keywords without changing meaning.
+    Falls back to original query if expansion fails.
+    """
+    # If query is already detailed enough skip expansion
+    if len(query.split()) > 15:
+        return query
+
+    prompt = f"""A Class 12 student described their interests as:
+"{query}"
+"""
+Expand this into a richer description for career matching. Add relevant 
+skills, activities, and career-related keywords that match what they mean.
+Keep it natural, 2-3 sentences maximum.
+Do not mention specific careers or job titles.
+Return only the expanded description, nothing else.
+
+Example:
+Input: "I like computers"
+Output: "I enjoy working with technology, solving problems through coding and 
+programming, building software applications, understanding how digital systems 
+work, and exploring new tools and platforms."
+"""
+
+    try:
+        r = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {groq_key}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": "llama-3.3-70b-versatile",
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.3,
+                "max_tokens": 150
+            },
+            timeout=10
+        )
+        if r.status_code == 200:
+            expanded = r.json()["choices"][0]["message"]["content"].strip()
+            return expanded
+    except Exception:
+        pass
+
+    return query  # fallback to original
 
 # ── Hybrid Weights ────────────────────────────────────────────
 CONTENT_WEIGHT = 0.70
@@ -46,7 +95,7 @@ def get_collab_scores(user_id, n_careers, svd_model):
 
 def get_recommendations(user_id, query, student_stream, riasec_top2,
                         df, sentence_model, index, svd_model,
-                        is_cold_start=True, top_k=10):
+                        is_cold_start=True, top_k=10, groq_key=None):
     """
     Full hybrid recommendation pipeline.
 
@@ -63,7 +112,9 @@ def get_recommendations(user_id, query, student_stream, riasec_top2,
     If the student has no interaction history, collab_weight is set to 0
     and the system falls back to pure content + psychometric scoring.
     """
-
+    # Expand vague queries for better semantic retrieval
+    if groq_key:
+        query = expand_query(query, groq_key)
     # Adjust weights for cold-start students
     content_weight = 1.0 if is_cold_start else CONTENT_WEIGHT
     collab_weight  = 0.0 if is_cold_start else COLLAB_WEIGHT
