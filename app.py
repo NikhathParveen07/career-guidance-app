@@ -175,10 +175,6 @@ def _list_items(items):
 
 def main():
     df             = load_careers()
-    # DEBUG — remove before final submission
-    st.sidebar.write(f"📊 Career source: {'O*NET API' if 'onet_code' in df.columns else 'CSV fallback'}")
-    st.sidebar.write(f"📊 Total careers loaded: {len(df)}")
-    st.sidebar.write(f"📊 Columns: {list(df.columns)}")
     sentence_model = load_sentence_model()
     index          = load_pinecone_index()
     supabase       = load_supabase()
