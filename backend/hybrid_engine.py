@@ -4,39 +4,46 @@
 # into a single ranked recommendation list
 # ============================================
 import numpy as np
+import requests
 from backend.embeddings import search_careers
 from backend.content_filter import (
     get_stream_boost,
     get_riasec_boost,
     apply_cross_stream_penalty
 )
-import requests
+
+
+# ── Hybrid Weights ────────────────────────────────────────────
+CONTENT_WEIGHT = 0.70
+COLLAB_WEIGHT  = 0.30
+# 70% content-based (semantic similarity) + 30% collaborative (SVD)
+# Content weight is higher because semantic signals are more reliable
+# at the current dataset scale. As real interaction data accumulates,
+# increasing the collaborative weight is recommended.
+
 
 def expand_query(query, groq_key):
     """
     Expand vague student interest queries into richer semantic descriptions.
     Uses Groq LLM to add relevant career keywords without changing meaning.
     Falls back to original query if expansion fails.
+    Only runs if query is fewer than 15 words.
     """
-    # If query is already detailed enough skip expansion
     if len(query.split()) > 15:
         return query
 
-    prompt = f"""A Class 12 student described their interests as:
-"{query}"
-"""
-Expand this into a richer description for career matching. Add relevant 
-skills, activities, and career-related keywords that match what they mean.
-Keep it natural, 2-3 sentences maximum.
-Do not mention specific careers or job titles.
-Return only the expanded description, nothing else.
-
-Example:
-Input: "I like computers"
-Output: "I enjoy working with technology, solving problems through coding and 
-programming, building software applications, understanding how digital systems 
-work, and exploring new tools and platforms."
-"""
+    prompt = (
+        f'A Class 12 student described their interests as:\n"{query}"\n\n'
+        "Expand this into a richer description for career matching. "
+        "Add relevant skills, activities, and career-related keywords "
+        "that match what they mean. Keep it natural, 2-3 sentences maximum. "
+        "Do not mention specific careers or job titles. "
+        "Return only the expanded description, nothing else.\n\n"
+        'Example:\nInput: "I like computers"\n'
+        'Output: "I enjoy working with technology, solving problems through '
+        "coding and programming, building software applications, understanding "
+        'how digital systems work, and exploring new tools and platforms."'
+    )
 
     try:
         r = requests.post(
@@ -46,10 +53,10 @@ work, and exploring new tools and platforms."
                 "Content-Type": "application/json"
             },
             json={
-                "model": "llama-3.3-70b-versatile",
-                "messages": [{"role": "user", "content": prompt}],
+                "model":       "llama-3.3-70b-versatile",
+                "messages":    [{"role": "user", "content": prompt}],
                 "temperature": 0.3,
-                "max_tokens": 150
+                "max_tokens":  150
             },
             timeout=10
         )
@@ -60,14 +67,6 @@ work, and exploring new tools and platforms."
         pass
 
     return query  # fallback to original
-
-# ── Hybrid Weights ────────────────────────────────────────────
-CONTENT_WEIGHT = 0.70
-COLLAB_WEIGHT  = 0.30
-# 70% content-based (semantic similarity) + 30% collaborative (SVD)
-# Content weight is higher because semantic signals are more reliable
-# at the current dataset scale. As real interaction data accumulates,
-# increasing the collaborative weight is recommended.
 
 
 def get_collab_scores(user_id, n_careers, svd_model):
@@ -89,7 +88,6 @@ def get_collab_scores(user_id, n_careers, svd_model):
             for cid, score in raw_scores.items()
         }
     else:
-        # All scores are identical — return neutral 0.5
         return {cid: 0.5 for cid in raw_scores}
 
 
@@ -100,6 +98,7 @@ def get_recommendations(user_id, query, student_stream, riasec_top2,
     Full hybrid recommendation pipeline.
 
     Steps:
+    0. Query expansion — enrich vague interest descriptions via Groq LLM
     1. Semantic search — retrieve top 20 careers by cosine similarity
     2. Collaborative scores — SVD predictions for all careers
     3. Cross-stream penalty — reduce collab score for wrong-stream careers
@@ -112,9 +111,10 @@ def get_recommendations(user_id, query, student_stream, riasec_top2,
     If the student has no interaction history, collab_weight is set to 0
     and the system falls back to pure content + psychometric scoring.
     """
-    # Expand vague queries for better semantic retrieval
+    # Step 0 — Expand vague queries for better semantic retrieval
     if groq_key:
         query = expand_query(query, groq_key)
+
     # Adjust weights for cold-start students
     content_weight = 1.0 if is_cold_start else CONTENT_WEIGHT
     collab_weight  = 0.0 if is_cold_start else COLLAB_WEIGHT
@@ -130,7 +130,6 @@ def get_recommendations(user_id, query, student_stream, riasec_top2,
     # Step 3–7 — Score each retrieved career
     results = []
     for match in matches:
-        # Parse career index from Pinecone vector ID (format: "career_N")
         try:
             cid = int(match['id'].split('_')[1])
         except (ValueError, IndexError):
@@ -143,17 +142,14 @@ def get_recommendations(user_id, query, student_stream, riasec_top2,
         career_stream = match['metadata']['stream']
         content_score = match['score']
 
-        # Get collaborative score with cross-stream penalty applied
         collab_score = collab_scores.get(cid, 0.5) if collab_weight > 0 else 0.0
         collab_score = apply_cross_stream_penalty(
             collab_score, career_stream, student_stream
         )
 
-        # Compute boost factors
         stream_boost = get_stream_boost(career_stream, student_stream)
         riasec_boost = get_riasec_boost(career_row.to_dict(), riasec_top2)
 
-        # Final hybrid score
         base_score  = content_weight * content_score + collab_weight * collab_score
         final_score = base_score * stream_boost * riasec_boost
 
@@ -173,6 +169,5 @@ def get_recommendations(user_id, query, student_stream, riasec_top2,
             'is_cold_start':    is_cold_start
         })
 
-    # Sort by final score descending and return top_k
     results.sort(key=lambda x: x['final_score'], reverse=True)
     return results[:top_k]
