@@ -288,7 +288,8 @@ def main():
                     user_id=profile['student_id'], query=profile['query'],
                     student_stream=profile['stream'], riasec_top2=riasec['top2'],
                     df=df, sentence_model=sentence_model, index=index,
-                    svd_model=svd_model, is_cold_start=True, top_k=10
+                    svd_model=svd_model, is_cold_start=True, top_k=10,
+                    groq_key=st.secrets["GROQ_API_KEY"]
                 )
 
         results = st.session_state.results
@@ -309,7 +310,7 @@ def main():
                     <div style="text-align:right">
                         <span style="font-size:1.3rem;font-weight:700;color:#60a5fa">{int(rec['final_score']*100)}%</span><br>
                         <small style="color:#888">match score</small>
-                    </div> 
+                    </div>
                 </div>
                 <div style="margin-top:0.5rem">
                     <span class="badge {badge}">{rec['stream']}</span>
@@ -355,7 +356,7 @@ def main():
 
         tab1, tab2 = st.tabs(["📊 Job Market", "🗺️ Career Pathway"])
 
-       # ══════════════════════════════════════════════════════
+        # ══════════════════════════════════════════════════════
         # TAB 1 — JOB MARKET
         # ══════════════════════════════════════════════════════
         with tab1:
@@ -397,7 +398,6 @@ def main():
             grow_src   = salary.get("growth_source", "")
             curr_lpa   = salary.get("current_lpa", "")
 
-            # ── Section 1: Career Outlook ─────────────────────
             gov_badge = '<span class="badge-pill badge-govbacked">Government backed</span>' \
                         if outlook.get("government_backed") else ""
 
@@ -410,7 +410,6 @@ def main():
             </div>
             """, unsafe_allow_html=True)
 
-            # ── Section 2: Salary ─────────────────────────────
             st.markdown(
                 '<p class="mkt-card-label" style="margin-bottom:8px">WHAT YOU WILL EARN</p>',
                 unsafe_allow_html=True
@@ -446,7 +445,6 @@ def main():
                 </div>
                 """, unsafe_allow_html=True)
 
-            # ── Section 3: Cities + Companies ────────────────
             col1, col2 = st.columns(2)
 
             with col1:
@@ -469,7 +467,6 @@ def main():
                 </div>
                 """, unsafe_allow_html=True)
 
-            # ── Section 4: Competition ────────────────────────
             st.markdown(f"""
             <div class="mkt-card">
                 <p class="mkt-card-label">How competitive is entry?</p>
@@ -478,7 +475,6 @@ def main():
             </div>
             """, unsafe_allow_html=True)
 
-            # ── Section 5: Policy ─────────────────────────────
             if policy.get("exists") and policy.get("explanation"):
                 st.markdown(f"""
                 <div class="mkt-card">
@@ -488,7 +484,6 @@ def main():
                 </div>
                 """, unsafe_allow_html=True)
 
-            # ── Footer ────────────────────────────────────────
             cache_label = "📦 Cached" if intel.get("from_cache") else "🔴 Live"
             st.caption(
                 f"{cache_label} · Updated: {intel.get('last_updated','')} · "
