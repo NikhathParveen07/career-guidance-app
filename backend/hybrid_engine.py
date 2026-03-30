@@ -16,10 +16,6 @@ from backend.content_filter import (
 # ── Hybrid Weights ────────────────────────────────────────────
 CONTENT_WEIGHT = 0.70
 COLLAB_WEIGHT  = 0.30
-# 70% content-based (semantic similarity) + 30% collaborative (SVD)
-# Content weight is higher because semantic signals are more reliable
-# at the current dataset scale. As real interaction data accumulates,
-# increasing the collaborative weight is recommended.
 
 
 def expand_query(query, groq_key):
@@ -28,9 +24,12 @@ def expand_query(query, groq_key):
     Uses Groq LLM to add relevant career keywords without changing meaning.
     Falls back to original query if expansion fails.
     Only runs if query is fewer than 15 words.
+
+    Returns (expanded_query, was_expanded) tuple.
+    was_expanded = True means Groq changed the query and student should review it.
     """
     if len(query.split()) > 15:
-        return query
+        return query, False   # Already detailed — no expansion needed
 
     prompt = (
         f'A Class 12 student described their interests as:\n"{query}"\n\n'
@@ -62,18 +61,19 @@ def expand_query(query, groq_key):
         )
         if r.status_code == 200:
             expanded = r.json()["choices"][0]["message"]["content"].strip()
-            return expanded
+            # Only return expanded if it is meaningfully different
+            if expanded and expanded.lower() != query.lower():
+                return expanded, True
     except Exception:
         pass
 
-    return query  # fallback to original
+    return query, False   # Fallback to original
 
 
 def get_collab_scores(user_id, n_careers, svd_model):
     """
     Compute and normalise collaborative scores for all careers.
-    Normalisation maps raw SVD predictions to [0, 1] range
-    so they are comparable with cosine similarity scores.
+    Normalisation maps raw SVD predictions to [0, 1] range.
     """
     raw_scores = {}
     for cid in range(n_careers):
@@ -93,29 +93,12 @@ def get_collab_scores(user_id, n_careers, svd_model):
 
 def get_recommendations(user_id, query, student_stream, riasec_top2,
                         df, sentence_model, index, svd_model,
-                        is_cold_start=True, top_k=10, groq_key=None):
+                        is_cold_start=True, top_k=10):
     """
     Full hybrid recommendation pipeline.
-
-    Steps:
-    0. Query expansion — enrich vague interest descriptions via Groq LLM
-    1. Semantic search — retrieve top 20 careers by cosine similarity
-    2. Collaborative scores — SVD predictions for all careers
-    3. Cross-stream penalty — reduce collab score for wrong-stream careers
-    4. Hybrid combination — weighted sum of content + collaborative
-    5. Stream boost — 1.2x lift for stream-aligned careers
-    6. RIASEC boost — 1.3x or 1.15x lift for personality-matched careers
-    7. Sort and return top_k results
-
-    Cold-start fallback:
-    If the student has no interaction history, collab_weight is set to 0
-    and the system falls back to pure content + psychometric scoring.
+    Query expansion is handled in app.py before calling this function
+    so the student can review and accept/reject the expanded query.
     """
-    # Step 0 — Expand vague queries for better semantic retrieval
-    if groq_key:
-        query = expand_query(query, groq_key)
-
-    # Adjust weights for cold-start students
     content_weight = 1.0 if is_cold_start else CONTENT_WEIGHT
     collab_weight  = 0.0 if is_cold_start else COLLAB_WEIGHT
 
