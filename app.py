@@ -41,13 +41,19 @@ st.markdown("""
     .career-card small { color: #aaaaaa !important; }
 
     .expand-box {
-        background: #1a2a1a; border-radius: 10px; padding: 1rem 1.2rem;
-        border: 1px solid #2a5a2a; margin: 0.8rem 0;
-        font-size: 0.9rem; color: #c8e6c9; line-height: 1.6;
+        background: #1a2a3a; border-radius: 10px; padding: 1rem 1.2rem;
+        border: 1px solid #2a4a6a; margin: 0.8rem 0;
+        font-size: 0.95rem; color: #d0e8f8; line-height: 1.7;
     }
     .expand-label {
-        font-size: 11px; color: #66bb6a; text-transform: uppercase;
+        font-size: 11px; color: #60a5fa; text-transform: uppercase;
         letter-spacing: 0.08em; margin-bottom: 6px; font-weight: 600;
+    }
+    .expand-original {
+        color: #8899aa; font-style: italic; margin-bottom: 10px;
+    }
+    .expand-result {
+        color: #d0e8f8; font-size: 0.95rem; line-height: 1.7;
     }
 
     .mkt-card {
@@ -78,15 +84,6 @@ st.markdown("""
     .list-item:last-child { border-bottom: none; }
     .list-num  { font-size: 12px; color: #5a6a7a; min-width: 18px; }
     .list-name { font-size: 14px; color: #d0d8e8; }
-
-    .pathway-card {
-        background: #1e2530; border-radius: 10px; padding: 1rem 1.2rem;
-        border: 1px solid #2e3a4e; margin-bottom: 0.6rem;
-    }
-    .pathway-section-title {
-        font-size: 11px; color: #8899aa; text-transform: uppercase;
-        letter-spacing: 0.08em; margin-bottom: 8px; font-weight: 600;
-    }
 
     .badge-pill {
         display: inline-block; padding: 3px 12px; border-radius: 20px;
@@ -222,7 +219,8 @@ def main():
     for key, default in [
         ('screen', 'profile'), ('profile', {}), ('riasec', {}),
         ('results', []),       ('selected_career', None),
-        ('expanded_query', None), ('query_reviewed', False)
+        ('expanded_query', None), ('query_reviewed', False),
+        ('query_was_expanded', False), ('show_expansion', False)
     ]:
         if key not in st.session_state:
             st.session_state[key] = default
@@ -248,9 +246,11 @@ def main():
 
     # ══════════════════════════════════════════════════════════
     # SCREEN 1 — PROFILE
+    # Query expansion happens here — student reviews before continuing
     # ══════════════════════════════════════════════════════════
     if st.session_state.screen == 'profile':
         st.markdown("### 📋 Tell us about yourself")
+
         with st.form("profile_form"):
             col1, col2 = st.columns(2)
             with col1:
@@ -262,22 +262,90 @@ def main():
             with col2:
                 city  = st.text_input("Your City", placeholder="e.g. Kurnool")
                 state = st.selectbox("Your State", INDIAN_STATES)
-                query = st.text_area("What are your interests?",
-                            placeholder="e.g. I love biology, drawing, and helping people",
-                            height=120)
-            if st.form_submit_button("Continue to RIASEC Quiz →"):
-                if not name or not query:
-                    st.error("Please fill in your name and interests.")
-                else:
-                    st.session_state.profile = {
-                        "student_id": f"STU_{str(uuid.uuid4())[:8].upper()}",
-                        "name": name, "stream": stream, "marks": marks,
-                        "city": city, "state": state, "budget": budget, "query": query
-                    }
-                    st.session_state.expanded_query = None
-                    st.session_state.query_reviewed = False
-                    st.session_state.screen = 'quiz'
-                    st.rerun()
+                query = st.text_area(
+                    "What are your interests?",
+                    placeholder="e.g. I like biology  /  I enjoy maths  /  I love drawing",
+                    height=120
+                )
+            submitted = st.form_submit_button("Check My Interests →")
+
+        # When form submitted — run expansion and show review
+        if submitted:
+            if not name or not query:
+                st.error("Please fill in your name and interests.")
+            else:
+                # Store temp profile
+                st.session_state._temp_profile = {
+                    "student_id": f"STU_{str(uuid.uuid4())[:8].upper()}",
+                    "name": name, "stream": stream, "marks": marks,
+                    "city": city, "state": state, "budget": budget, "query": query
+                }
+                # Run expansion
+                with st.spinner("✨ Understanding your interests..."):
+                    expanded, was_expanded = expand_query(
+                        query, st.secrets["GROQ_API_KEY"]
+                    )
+                st.session_state._temp_expanded      = expanded
+                st.session_state._temp_was_expanded  = was_expanded
+                st.session_state.show_expansion      = True
+                st.rerun()
+
+        # Show expansion review below the form
+        if st.session_state.show_expansion and hasattr(st.session_state, '_temp_profile'):
+            temp_profile  = st.session_state._temp_profile
+            expanded      = st.session_state._temp_expanded
+            was_expanded  = st.session_state._temp_was_expanded
+            original      = temp_profile['query']
+
+            if was_expanded:
+                st.markdown("---")
+                st.markdown("#### ✨ We understood your interests better!")
+                st.markdown(
+                    f'<div class="expand-box">'
+                    f'<div class="expand-label">📝 What you wrote:</div>'
+                    f'<div class="expand-original">{original}</div>'
+                    f'<div class="expand-label">💡 What this means for your career search:</div>'
+                    f'<div class="expand-result">{expanded}</div>'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
+                st.caption(
+                    "This helps us find better career matches for you. "
+                    "You can use this or go with what you wrote."
+                )
+                st.markdown("")
+
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    if st.button("✅ Yes, use this — Continue to Quiz →", use_container_width=True):
+                        st.session_state.profile       = temp_profile
+                        st.session_state.expanded_query      = expanded
+                        st.session_state.query_was_expanded  = True
+                        st.session_state.query_reviewed      = True
+                        st.session_state.show_expansion      = False
+                        st.session_state.results             = []
+                        st.session_state.screen              = 'quiz'
+                        st.rerun()
+                with col_b:
+                    if st.button("↩️ No, use my original — Continue to Quiz →", use_container_width=True):
+                        st.session_state.profile       = temp_profile
+                        st.session_state.expanded_query      = original
+                        st.session_state.query_was_expanded  = False
+                        st.session_state.query_reviewed      = True
+                        st.session_state.show_expansion      = False
+                        st.session_state.results             = []
+                        st.session_state.screen              = 'quiz'
+                        st.rerun()
+            else:
+                # Query was already detailed — no expansion needed, go straight to quiz
+                st.session_state.profile             = temp_profile
+                st.session_state.expanded_query      = original
+                st.session_state.query_was_expanded  = False
+                st.session_state.query_reviewed      = True
+                st.session_state.show_expansion      = False
+                st.session_state.results             = []
+                st.session_state.screen              = 'quiz'
+                st.rerun()
 
     # ══════════════════════════════════════════════════════════
     # SCREEN 2 — RIASEC QUIZ
@@ -300,7 +368,9 @@ def main():
                 st.session_state.results = []
                 st.rerun()
         if st.button("← Back to Profile"):
-            st.session_state.screen = 'profile'; st.rerun()
+            st.session_state.screen = 'profile'
+            st.session_state.show_expansion = False
+            st.rerun()
 
     # ══════════════════════════════════════════════════════════
     # SCREEN 3 — RECOMMENDATIONS
@@ -324,77 +394,20 @@ def main():
                 st.caption(RIASEC_DESCRIPTIONS[rtype])
         st.markdown("---")
 
-        # ── Task 3: Query Expansion UI ────────────────────────
         if not st.session_state.results:
-
-            original_query = profile['query']
-
-            # Run expansion if not done yet
-            if st.session_state.expanded_query is None:
-                with st.spinner("🔍 Understanding your interests..."):
-                    expanded, was_expanded = expand_query(
-                        original_query,
-                        st.secrets["GROQ_API_KEY"]
-                    )
-                    st.session_state.expanded_query  = expanded
-                    st.session_state.query_was_expanded = was_expanded
-
-            expanded_query  = st.session_state.expanded_query
-            was_expanded    = st.session_state.get('query_was_expanded', False)
-            query_reviewed  = st.session_state.query_reviewed
-
-            # Show expansion review UI only if query was expanded and not yet reviewed
-            if was_expanded and not query_reviewed:
-                st.markdown("#### 🤖 We enriched your interest description")
-                st.markdown(
-                    f'<div class="expand-box">'
-                    f'<div class="expand-label">✨ Your original: </div>'
-                    f'<i style="color:#aaa">{original_query}</i>'
-                    f'<br><br>'
-                    f'<div class="expand-label">🚀 Enriched version: </div>'
-                    f'{expanded_query}'
-                    f'</div>',
-                    unsafe_allow_html=True
+            final_query = st.session_state.expanded_query or profile['query']
+            with st.spinner("🔄 Finding your best career matches..."):
+                st.session_state.results = get_recommendations(
+                    user_id=profile['student_id'], query=final_query,
+                    student_stream=profile['stream'], riasec_top2=riasec['top2'],
+                    df=df, sentence_model=sentence_model, index=index,
+                    svd_model=svd_model, is_cold_start=True, top_k=10
                 )
-                st.caption(
-                    "We expanded your description to help find better career matches. "
-                    "You can accept this enriched version or use your original."
-                )
-
-                col_a, col_b = st.columns(2)
-                with col_a:
-                    if st.button("✅ Use enriched version", use_container_width=True):
-                        st.session_state.query_reviewed = True
-                        st.session_state.results = []
-                        st.rerun()
-                with col_b:
-                    if st.button("↩️ Use my original", use_container_width=True):
-                        st.session_state.expanded_query  = original_query
-                        st.session_state.query_reviewed  = True
-                        st.session_state.results = []
-                        st.rerun()
-
-            else:
-                # Query confirmed — run recommendations
-                with st.spinner("🔄 Finding your best career matches..."):
-                    final_query = st.session_state.expanded_query or original_query
-                    st.session_state.results = get_recommendations(
-                        user_id=profile['student_id'], query=final_query,
-                        student_stream=profile['stream'], riasec_top2=riasec['top2'],
-                        df=df, sentence_model=sentence_model, index=index,
-                        svd_model=svd_model, is_cold_start=True, top_k=10
-                    )
-                st.rerun()
 
         results = st.session_state.results
         if not results:
             st.info("Processing your interests...")
             return
-
-        # Show which query was used
-        final_query = st.session_state.expanded_query or profile['query']
-        if st.session_state.get('query_was_expanded') and final_query != profile['query']:
-            st.caption(f"🔍 Recommendations based on enriched interests")
 
         st.markdown(f"#### 🏆 Top {len(results)} Careers for You")
 
@@ -402,7 +415,9 @@ def main():
             badge       = STREAM_BADGE.get(rec['stream'], 'badge-science')
             riasec_icon = ("⭐⭐" if rec['riasec_boost']==1.3 else "⭐" if rec['riasec_boost']==1.15 else "")
             stream_icon = "🎓" if rec['stream_boost']>1.0 else ""
-            interest, personality, stream_exp = generate_explanation(rec, profile['query'], riasec['top2'], profile['stream'])
+            interest, personality, stream_exp = generate_explanation(
+                rec, profile['query'], riasec['top2'], profile['stream']
+            )
 
             st.markdown(f"""
             <div class="career-card">
@@ -434,7 +449,8 @@ def main():
 
         if st.button("← Start Over"):
             for key in ['screen','profile','riasec','results','selected_career',
-                        'expanded_query','query_reviewed','query_was_expanded']:
+                        'expanded_query','query_reviewed','query_was_expanded',
+                        'show_expansion']:
                 st.session_state.pop(key, None)
             st.rerun()
 
@@ -462,6 +478,8 @@ def main():
 
         # ══════════════════════════════════════════════════════
         # TAB 1 — JOB MARKET
+        # Task 3: Removed "Where the jobs are" city section
+        # Renamed "Who will hire you" to "Top Companies in India"
         # ══════════════════════════════════════════════════════
         with tab1:
             with st.spinner("🌐 Fetching market data..."):
@@ -478,7 +496,6 @@ def main():
             future = market["future"]
             salary = future["salary"]
             intel  = future["intelligence"]
-            cities = future["cities"]
             comps  = future["companies"]
 
             outlook     = intel.get("outlook", {})
@@ -502,6 +519,7 @@ def main():
             grow_src   = salary.get("growth_source", "")
             curr_lpa   = salary.get("current_lpa", "")
 
+            # ── Career Outlook ────────────────────────────────
             gov_badge = '<span class="badge-pill badge-govbacked">Government backed</span>' \
                         if outlook.get("government_backed") else ""
 
@@ -514,6 +532,7 @@ def main():
             </div>
             """, unsafe_allow_html=True)
 
+            # ── Salary ────────────────────────────────────────
             st.markdown(
                 '<p class="mkt-card-label" style="margin-bottom:8px">WHAT YOU WILL EARN</p>',
                 unsafe_allow_html=True
@@ -549,28 +568,18 @@ def main():
                 </div>
                 """, unsafe_allow_html=True)
 
-            col1, col2 = st.columns(2)
+            # ── Top Companies in India ─────────────────────────
+            # Task 3: Removed city section, full width companies section
+            comp_items = _list_items(comps) if comps else \
+                '<div class="list-item"><span class="list-name" style="color:#5a6a7a">No company data available</span></div>'
+            st.markdown(f"""
+            <div class="mkt-card">
+                <p class="mkt-card-label">🏢 Top Companies in India that will hire you</p>
+                {comp_items}
+            </div>
+            """, unsafe_allow_html=True)
 
-            with col1:
-                city_items = _list_items(cities) if cities else \
-                    '<div class="list-item"><span class="list-name" style="color:#5a6a7a">No location data available</span></div>'
-                st.markdown(f"""
-                <div class="mkt-card">
-                    <p class="mkt-card-label">Where the jobs are</p>
-                    {city_items}
-                </div>
-                """, unsafe_allow_html=True)
-
-            with col2:
-                comp_items = _list_items(comps) if comps else \
-                    '<div class="list-item"><span class="list-name" style="color:#5a6a7a">No company data available</span></div>'
-                st.markdown(f"""
-                <div class="mkt-card">
-                    <p class="mkt-card-label">Who will hire you</p>
-                    {comp_items}
-                </div>
-                """, unsafe_allow_html=True)
-
+            # ── Competition ───────────────────────────────────
             st.markdown(f"""
             <div class="mkt-card">
                 <p class="mkt-card-label">How competitive is entry?</p>
@@ -579,6 +588,7 @@ def main():
             </div>
             """, unsafe_allow_html=True)
 
+            # ── Policy ────────────────────────────────────────
             if policy.get("exists") and policy.get("explanation"):
                 st.markdown(f"""
                 <div class="mkt-card">
@@ -595,7 +605,7 @@ def main():
             )
 
         # ══════════════════════════════════════════════════════
-        # TAB 2 — CAREER PATHWAY (Task 4 — redesigned)
+        # TAB 2 — CAREER PATHWAY
         # ══════════════════════════════════════════════════════
         with tab2:
             with st.spinner("🤖 Generating career roadmap..."):
@@ -713,7 +723,6 @@ def main():
                                 {"<br><small style='color:#8899aa'>" + level + "</small>" if level else ""}
                             </div>""", unsafe_allow_html=True)
                 else:
-                    # Fallback to core_skills from O*NET
                     if rec.get('core_skills'):
                         skills_list = [s.strip() for s in rec['core_skills'].split(',') if s.strip()]
                         skill_cols  = st.columns(3)
