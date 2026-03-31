@@ -32,17 +32,19 @@ def expand_query(query, groq_key):
         return query, False   # Already detailed — no expansion needed
 
     prompt = (
-        f'A Class 12 student described their interests as:\n"{query}"\n\n'
-        "Expand this into a richer description for career matching. "
-        "Add relevant skills, activities, and career-related keywords "
-        "that match what they mean. Keep it natural, 2-3 sentences maximum. "
-        "Do not mention specific careers or job titles. "
-        "Return only the expanded description, nothing else.\n\n"
-        'Example:\nInput: "I like computers"\n'
-        'Output: "I enjoy working with technology, solving problems through '
-        "coding and programming, building software applications, understanding "
-        'how digital systems work, and exploring new tools and platforms."'
-    )
+    f'A Class 12 student wrote this about their interests:\n"{query}"\n\n'
+    "Rewrite this in 2-3 simple sentences that sound like a student talking about "
+    "what they enjoy doing in daily life. Use casual, friendly language. "
+    "Talk about activities, hobbies, and things they like doing — not jobs or careers. "
+    "Do NOT mention any job titles, professions, or career fields. "
+    "Write as if the student is describing themselves to a friend.\n\n"
+    "Example:\n"
+    'Input: "I like computers"\n'
+    'Output: "I enjoy spending time with technology and figuring out how things work '
+    "on screen. I like exploring apps, the internet, and solving problems using devices. "
+    'I also enjoy activities like coding, gaming, or building things digitally."\n\n'
+    "Return only the rewritten description. Nothing else."
+)
 
     try:
         r = requests.post(
