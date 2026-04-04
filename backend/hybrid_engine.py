@@ -1,7 +1,13 @@
 # ============================================
 # backend/hybrid_engine.py
 # Combines content-based and collaborative scores
-# into a single ranked recommendation list
+# into a single ranked recommendation list.
+#
+# Adaptive weighting strategy (Do et al. [R8]):
+#   Weights shift based on real interaction volume.
+#   Cold start → pure content.
+#   As real Keep/Drop data accumulates → collaborative
+#   component earns progressively more influence.
 # ============================================
 import numpy as np
 import requests
@@ -13,38 +19,62 @@ from backend.content_filter import (
 )
 
 
-# ── Hybrid Weights ────────────────────────────────────────────
-CONTENT_WEIGHT = 0.70
-COLLAB_WEIGHT  = 0.30
+def get_adaptive_weights(n_real_interactions):
+    """
+    Compute content and collaborative weights adaptively
+    based on how many real Keep/Drop interactions exist.
+
+    Thresholds:
+      0          → pure content (cold start, no real data)
+      1–9        → mostly content, collab activates lightly
+      10–29      → balanced hybrid
+      30+        → collab earns equal footing with content
+
+    Directly implements the adaptive combination principle
+    from Do et al. [R8], grounding collaborative influence
+    only when sufficient real peer behaviour is observed.
+    """
+    if n_real_interactions == 0:
+        return 1.0, 0.0
+    elif n_real_interactions < 10:
+        return 0.85, 0.15
+    elif n_real_interactions < 30:
+        return 0.70, 0.30
+    else:
+        return 0.55, 0.45
+
+
+def get_real_interaction_count(supabase):
+    """
+    Count total real Keep/Drop interactions in Supabase.
+    Used to determine adaptive weights for this session.
+    Returns 0 safely if Supabase is unavailable.
+    """
+    try:
+        result = supabase.table("live_interactions").select("student_id", count="exact").execute()
+        return result.count or 0
+    except Exception:
+        return 0
 
 
 def expand_query(query, groq_key):
     """
     Expand vague student interest queries into richer semantic descriptions.
-    Uses Groq LLM to add relevant career keywords without changing meaning.
-    Falls back to original query if expansion fails.
     Only runs if query is fewer than 15 words.
-
     Returns (expanded_query, was_expanded) tuple.
-    was_expanded = True means Groq changed the query and student should review it.
     """
     if len(query.split()) > 15:
-        return query, False   # Already detailed — no expansion needed
+        return query, False
 
     prompt = (
-    f'A Class 12 student wrote this about their interests:\n"{query}"\n\n'
-    "Rewrite this in 2-3 simple sentences that sound like a student talking about "
-    "what they enjoy doing in daily life. Use casual, friendly language. "
-    "Talk about activities, hobbies, and things they like doing — not jobs or careers. "
-    "Do NOT mention any job titles, professions, or career fields. "
-    "Write as if the student is describing themselves to a friend.\n\n"
-    "Example:\n"
-    'Input: "I like computers"\n'
-    'Output: "I enjoy spending time with technology and figuring out how things work '
-    "on screen. I like exploring apps, the internet, and solving problems using devices. "
-    'I also enjoy activities like coding, gaming, or building things digitally."\n\n'
-    "Return only the rewritten description. Nothing else."
-)
+        f'A Class 12 student wrote this about their interests:\n"{query}"\n\n'
+        "Rewrite this in 2-3 simple sentences that sound like a student talking about "
+        "what they enjoy doing in daily life. Use casual, friendly language. "
+        "Talk about activities, hobbies, and things they like doing — not jobs or careers. "
+        "Do NOT mention any job titles, professions, or career fields. "
+        "Write as if the student is describing themselves to a friend.\n\n"
+        "Return only the rewritten description. Nothing else."
+    )
 
     try:
         r = requests.post(
@@ -63,13 +93,12 @@ def expand_query(query, groq_key):
         )
         if r.status_code == 200:
             expanded = r.json()["choices"][0]["message"]["content"].strip()
-            # Only return expanded if it is meaningfully different
             if expanded and expanded.lower() != query.lower():
                 return expanded, True
     except Exception:
         pass
 
-    return query, False   # Fallback to original
+    return query, False
 
 
 def get_collab_scores(user_id, n_careers, svd_model):
@@ -95,24 +124,20 @@ def get_collab_scores(user_id, n_careers, svd_model):
 
 def get_recommendations(user_id, query, student_stream, riasec_top2,
                         df, sentence_model, index, svd_model,
-                        is_cold_start=True, top_k=10):
+                        supabase, is_cold_start=True, top_k=10):
     """
-    Full hybrid recommendation pipeline.
-    Query expansion is handled in app.py before calling this function
-    so the student can review and accept/reject the expanded query.
+    Full hybrid recommendation pipeline with adaptive weighting.
+    Weights are determined by real Keep/Drop interaction volume.
     """
-    content_weight = 1.0 if is_cold_start else CONTENT_WEIGHT
-    collab_weight  = 0.0 if is_cold_start else COLLAB_WEIGHT
+    n_real = get_real_interaction_count(supabase)
+    content_weight, collab_weight = get_adaptive_weights(n_real)
 
-    # Step 1 — Semantic retrieval from Pinecone
     matches = search_careers(query, sentence_model, index, top_k=20)
 
-    # Step 2 — Collaborative scores (skip if cold-start)
     collab_scores = {}
     if collab_weight > 0:
         collab_scores = get_collab_scores(user_id, len(df), svd_model)
 
-    # Step 3–7 — Score each retrieved career
     results = []
     for match in matches:
         try:
@@ -151,7 +176,7 @@ def get_recommendations(user_id, query, student_stream, riasec_top2,
             'collab_score':     round(collab_score,  4),
             'stream_boost':     stream_boost,
             'riasec_boost':     riasec_boost,
-            'is_cold_start':    is_cold_start
+            'is_cold_start':    collab_weight == 0.0
         })
 
     results.sort(key=lambda x: x['final_score'], reverse=True)
