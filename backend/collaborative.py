@@ -1,18 +1,38 @@
 # ============================================
 # backend/collaborative.py
 # LightSVD — pure numpy collaborative filtering
-# Replaces scikit-surprise completely
+#
+# Cold-start strategy:
+#   System-level cold start is addressed by pre-populating
+#   the interaction matrix with a curated seed dataset of
+#   100 synthetic student profiles whose career preferences
+#   reflect realistic stream-career alignment patterns in
+#   the Indian education context.
+#
+#   As real students submit Keep/Drop signals, real interactions
+#   are loaded from Supabase and given double weight over
+#   synthetic seed interactions, so the model progressively
+#   grounds itself in genuine peer behaviour.
 # ============================================
 import numpy as np
+import pandas as pd
 import streamlit as st
-import random
+import os
+
+
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA_DIR = os.path.join(BASE_DIR, "data")
+
+# Real interactions are weighted 2x over synthetic seed interactions
+# As real data grows, synthetic influence naturally diminishes
+REAL_INTERACTION_WEIGHT = 2
 
 
 class LightSVD:
     """
     Lightweight SVD collaborative filtering using numpy only.
     Drop-in replacement for scikit-surprise SVD.
-    Compatible with Kaggle numpy 2.x and all environments.
+    Compatible with numpy 2.x and all environments.
     """
     def __init__(self, n_factors=50, n_epochs=20, lr=0.005, reg=0.02):
         self.n_factors   = n_factors
@@ -44,12 +64,13 @@ class LightSVD:
                 i = self.item_index.get(row['career_id'])
                 if u is None or i is None:
                     continue
+                weight     = row.get('weight', 1.0)
                 err        = row['rating'] - self._raw(u, i)
-                self.bu[u] += self.lr * (err - self.reg * self.bu[u])
-                self.bi[i] += self.lr * (err - self.reg * self.bi[i])
+                self.bu[u] += self.lr * (weight * err - self.reg * self.bu[u])
+                self.bi[i] += self.lr * (weight * err - self.reg * self.bi[i])
                 pu         = self.P[u].copy()
-                self.P[u] += self.lr * (err * self.Q[i] - self.reg * self.P[u])
-                self.Q[i] += self.lr * (err * pu        - self.reg * self.Q[i])
+                self.P[u] += self.lr * (weight * err * self.Q[i] - self.reg * self.P[u])
+                self.Q[i] += self.lr * (weight * err * pu        - self.reg * self.Q[i])
 
         return self
 
@@ -63,7 +84,6 @@ class LightSVD:
         """
         Predict rating for user_id and career_id.
         Returns float between 1 and 5.
-        Compatible with scikit-surprise predict() interface.
         """
         u = self.user_index.get(user_id)
         i = self.item_index.get(career_id)
@@ -72,56 +92,114 @@ class LightSVD:
         return float(np.clip(self._raw(u, i), 1, 5))
 
 
-def _generate_interactions(df):
+def _load_seed_interactions():
     """
-    Generate synthetic student-career interactions
-    for training LightSVD on 1016 O*NET careers.
+    Load the curated seed interaction dataset.
+    These are synthetic interactions encoding realistic
+    stream-career alignment patterns in Indian education.
+    Weighted at 1.0 — real interactions will outweigh these.
     """
-    import pandas as pd
-    random.seed(42)
-    np.random.seed(42)
+    try:
+        csv_path = os.path.join(DATA_DIR, "interactions.csv")
+        df = pd.read_csv(csv_path)
+        df = df[['student_id', 'career_id', 'rating']].copy()
+        df['weight'] = 1.0
+        df['source'] = 'seed'
+        return df
+    except Exception as e:
+        print(f"Could not load seed interactions: {e}")
+        return pd.DataFrame(columns=['student_id', 'career_id', 'rating', 'weight', 'source'])
 
-    students     = [f"STU{i:04d}" for i in range(200)]
-    interactions = []
 
-    for student_id in students:
-        stream         = random.choice(['Science', 'Commerce', 'Arts', 'Vocational'])
-        stream_careers = df[df['stream'] == stream].index.tolist()
-        other_careers  = df[df['stream'] != stream].index.tolist()
+def _load_real_interactions(supabase):
+    """
+    Load genuine Keep/Drop interactions from Supabase.
+    Keep = 5, Drop = 1.
 
-        for career_id in random.sample(stream_careers, min(15, len(stream_careers))):
-            interactions.append({
-                'student_id': student_id,
-                'career_id':  career_id,
-                'rating':     random.choice([4, 4, 5, 5, 3])
-            })
-        for career_id in random.sample(other_careers, min(5, len(other_careers))):
-            interactions.append({
-                'student_id': student_id,
-                'career_id':  career_id,
-                'rating':     random.choice([1, 2, 2, 3])
-            })
+    Following positive-unlabeled design: only explicit signals
+    are recorded. No-action is never assumed negative.
 
-    return pd.DataFrame(interactions)
+    Real interactions get double weight so they progressively
+    outweigh synthetic seed data as real volume grows.
+    """
+    try:
+        result = supabase.table("live_interactions").select("*").execute()
+        if not result.data:
+            return pd.DataFrame(columns=['student_id', 'career_id', 'rating', 'weight', 'source'])
+
+        df = pd.DataFrame(result.data)
+        df = df[['student_id', 'career_id', 'rating']].copy()
+        df['weight'] = float(REAL_INTERACTION_WEIGHT)
+        df['source'] = 'real'
+        return df
+    except Exception as e:
+        print(f"Could not load real interactions from Supabase: {e}")
+        return pd.DataFrame(columns=['student_id', 'career_id', 'rating', 'weight', 'source'])
+
+
+def _build_combined_matrix(supabase):
+    """
+    Combine seed and real interactions into one training DataFrame.
+
+    If a real interaction exists for the same student+career as a
+    seed interaction, real takes precedence — seed row is dropped.
+    This prevents contradictory signals in the training matrix.
+    """
+    seed_df = _load_seed_interactions()
+    real_df = _load_real_interactions(supabase)
+
+    n_real = len(real_df)
+    n_seed = len(seed_df)
+    print(f"Interactions — seed: {n_seed}, real: {n_real}")
+
+    if n_real == 0:
+        return seed_df
+
+    if n_seed > 0:
+        real_keys = set(zip(real_df['student_id'], real_df['career_id']))
+        seed_df = seed_df[
+            ~seed_df.apply(
+                lambda r: (r['student_id'], r['career_id']) in real_keys,
+                axis=1
+            )
+        ]
+
+    combined = pd.concat([seed_df, real_df], ignore_index=True)
+    return combined
+
+
+def save_interaction(supabase, student_id, career_id, career_title, signal, stream):
+    """
+    Save a single Keep/Drop interaction to Supabase instantly.
+    Called the moment the student presses Keep or Drop.
+
+    signal: 5 = Keep, 1 = Drop
+    Uses upsert so toggling Keep <-> Drop updates the existing record.
+    """
+    try:
+        supabase.table("live_interactions").upsert({
+            "student_id":   student_id,
+            "career_id":    int(career_id),
+            "career_title": career_title,
+            "rating":       int(signal),
+            "stream":       stream,
+        }, on_conflict="student_id,career_id").execute()
+        return True
+    except Exception as e:
+        print(f"Could not save interaction: {e}")
+        return False
 
 
 @st.cache_resource
-def load_svd_model():
+def load_svd_model(_supabase):
     """
     Load and return trained LightSVD model.
-    Cached by Streamlit — trains once per session.
+    Trains on combined seed + real interactions.
+
+    _supabase prefixed with underscore so Streamlit does not
+    try to hash the Supabase client for caching.
     """
-    from backend.data_loader import load_careers
-
-    df = load_careers()
-
-    # Ensure stream column exists
-    if '12th_stream' in df.columns and 'stream' not in df.columns:
-        df = df.rename(columns={'12th_stream': 'stream'})
-
-    interactions_df = _generate_interactions(df)
-
+    combined_df = _build_combined_matrix(_supabase)
     model = LightSVD(n_factors=50, n_epochs=20)
-    model.fit(interactions_df)
-
+    model.fit(combined_df)
     return model
