@@ -11,8 +11,7 @@ from pinecone import Pinecone
 from supabase import create_client
 from sentence_transformers import SentenceTransformer
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from onet_loader import fetch_all_onet_careers
+from backend.onet_loader import fetch_all_onet_careers
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(BASE_DIR, "data")
