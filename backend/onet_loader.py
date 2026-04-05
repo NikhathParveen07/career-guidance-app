@@ -14,6 +14,7 @@
 import requests
 import time
 from datetime import datetime, timezone
+from onet_india_filter import is_india_relevant
 
 
 ONET_BASE_URL = "https://api-v2.onetcenter.org"
@@ -240,6 +241,18 @@ def fetch_all_onet_careers(api_key, supabase):
 
     occupations = _fetch_all_occupations(api_key)
     print(f"Total occupations found: {len(occupations)}")
+    
+    # ── Apply India relevance filter ──────────────────────────
+    occupations = [
+        occ for occ in occupations
+        if is_india_relevant(
+            occ["code"],
+            occ["title"],
+            SOC_TO_SECTOR.get(_get_soc_prefix(occ["code"]), "General")
+        )
+    ]
+    print(f"After India filter: {len(occupations)} occupations")
+
 
     if not occupations:
         print("No occupations returned — check ONET_API_KEY in Streamlit secrets")
