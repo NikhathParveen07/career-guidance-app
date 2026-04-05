@@ -27,6 +27,13 @@ def load_careers():
     """
     Returns (df, pinecone_needs_rebuild).
     pinecone_needs_rebuild is True only when a fresh O*NET fetch just ran.
+
+    IMPORTANT: st.session_state must NOT be accessed inside @st.cache_data.
+    Cache functions are shared across sessions; session state is per-user.
+    The fresh_fetch flag is set to True whenever this function body executes
+    (which only happens on a cache miss, i.e., a genuine fresh API fetch).
+    Per-session dedup of the Pinecone rebuild is handled in main() via
+    st.session_state["pinecone_rebuilt"].
     """
     fresh_fetch = False
 
@@ -43,9 +50,10 @@ def load_careers():
                 if "onet_code" in df.columns and "nco_id" not in df.columns:
                     df["nco_id"] = df["onet_code"]
 
-                if not st.session_state.get("onet_cache_loaded"):
-                    fresh_fetch = True
-                    st.session_state["onet_cache_loaded"] = True
+                # fresh_fetch = True whenever this function body runs,
+                # because @st.cache_data means it only executes on cache miss
+                # (i.e., first run or after TTL expiry — a genuine fresh fetch).
+                fresh_fetch = True
 
                 # Merge India-specific careers
                 india_path = os.path.join(DATA_DIR, "india_specific_careers.csv")
