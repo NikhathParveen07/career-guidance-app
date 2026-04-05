@@ -15,6 +15,7 @@ import requests
 import time
 from datetime import datetime, timezone
 from onet_india_filter import is_india_relevant
+from embed_careers import embed_and_upsert
 
 
 ONET_BASE_URL = "https://api-v2.onetcenter.org"
@@ -290,7 +291,7 @@ def fetch_all_onet_careers(api_key, supabase):
 
         time.sleep(0.1)  # Respect O*NET rate limits
 
-    print(f"Fetched details for {len(careers)} careers")
+   print(f"Fetched details for {len(careers)} careers")
 
     # Save to Supabase in batches of 50
     try:
@@ -302,3 +303,19 @@ def fetch_all_onet_careers(api_key, supabase):
         print(f"Error saving to Supabase: {e}")
 
     return careers
+
+
+def rebuild_pinecone_after_refresh(df, pinecone_index, sentence_model):
+    """
+    Call this after load_careers() returns the merged DataFrame
+    whenever a fresh O*NET fetch has just happened.
+    Rebuilds the entire Pinecone index to stay in sync with the career list.
+    """
+    try:
+        # Wipe the existing index first so stale vectors don't linger
+        pinecone_index.delete(delete_all=True)
+        print("Pinecone index cleared")
+    except Exception as e:
+        print(f"Could not clear Pinecone index: {e}")
+
+    embed_and_upsert(df, pinecone_index, sentence_model)
