@@ -1,57 +1,43 @@
 # ============================================
 # backend/onet_loader.py
-# Fetches all occupations from O*NET Web Services v2.0
-#
-# Verified working endpoints:
-#   GET /online/occupations/                          — list all
-#   GET /online/occupations/{code}/summary/interests  — RIASEC
-#   GET /online/occupations/{code}/summary/skills     — skills
-#
-# Auth: X-API-Key header
-# Stream/sector mapped from SOC code prefix (no extra API call)
-# Caches in Supabase for 30 days
 # ============================================
 import requests
 import time
 from datetime import datetime, timezone
-from onet_india_filter import is_india_relevant
-from embed_careers import embed_and_upsert
+from backend.onet_india_filter import is_india_relevant
+from backend.embed_careers import embed_and_upsert
 
 
 ONET_BASE_URL = "https://api-v2.onetcenter.org"
 CACHE_DAYS    = 30
 
 
-# ── SOC Major Group prefix to Indian Class 12 stream ─────────
-# SOC codes start with two digits indicating major occupational group
-# Reference: https://www.bls.gov/soc/2018/major_groups.htm
 SOC_TO_STREAM = {
-    "11": "Commerce",    # Management
-    "13": "Commerce",    # Business and Financial Operations
-    "15": "Science",     # Computer and Mathematical
-    "17": "Science",     # Architecture and Engineering
-    "19": "Science",     # Life, Physical, and Social Science
-    "21": "Arts",        # Community and Social Service
-    "23": "Commerce",    # Legal
-    "25": "Arts",        # Educational Instruction and Library
-    "27": "Arts",        # Arts, Design, Entertainment, Sports, and Media
-    "29": "Science",     # Healthcare Practitioners and Technical
-    "31": "Science",     # Healthcare Support
-    "33": "Vocational",  # Protective Service
-    "35": "Vocational",  # Food Preparation and Serving Related
-    "37": "Vocational",  # Building and Grounds Cleaning and Maintenance
-    "39": "Vocational",  # Personal Care and Service
-    "41": "Commerce",    # Sales and Related
-    "43": "Commerce",    # Office and Administrative Support
-    "45": "Science",     # Farming, Fishing, and Forestry
-    "47": "Vocational",  # Construction and Extraction
-    "49": "Vocational",  # Installation, Maintenance, and Repair
-    "51": "Vocational",  # Production
-    "53": "Vocational",  # Transportation and Material Moving
-    "55": "Vocational",  # Military Specific
+    "11": "Commerce",
+    "13": "Commerce",
+    "15": "Science",
+    "17": "Science",
+    "19": "Science",
+    "21": "Arts",
+    "23": "Commerce",
+    "25": "Arts",
+    "27": "Arts",
+    "29": "Science",
+    "31": "Science",
+    "33": "Vocational",
+    "35": "Vocational",
+    "37": "Vocational",
+    "39": "Vocational",
+    "41": "Commerce",
+    "43": "Commerce",
+    "45": "Science",
+    "47": "Vocational",
+    "49": "Vocational",
+    "51": "Vocational",
+    "53": "Vocational",
+    "55": "Vocational",
 }
 
-# ── SOC Major Group prefix to sector ─────────────────────────
 SOC_TO_SECTOR = {
     "11": "Management",
     "13": "Finance",
@@ -80,7 +66,6 @@ SOC_TO_SECTOR = {
 
 
 def _headers(api_key):
-    """O*NET v2.0 uses X-API-Key header for authentication."""
     return {
         "Accept":    "application/json",
         "X-API-Key": api_key
@@ -88,18 +73,10 @@ def _headers(api_key):
 
 
 def _get_soc_prefix(code):
-    """Extract SOC major group prefix from occupation code.
-    e.g. '13-2011.00' → '13'
-    """
     return code.split("-")[0] if "-" in code else "11"
 
 
 def _fetch_all_occupations(api_key):
-    """
-    Fetch complete list of all O*NET occupations.
-    Verified endpoint: GET /online/occupations/
-    Returns list of {code, title} dicts.
-    """
     occupations = []
     start       = 1
     page_size   = 100
@@ -150,12 +127,6 @@ def _fetch_all_occupations(api_key):
 
 
 def _fetch_interests(code, api_key):
-    """
-    Fetch RIASEC codes for one occupation.
-    Verified endpoint: GET /online/occupations/{code}/summary/interests
-    Uses interest_code field directly e.g. 'CEI' → C, E
-    Returns (primary_riasec, secondary_riasec)
-    """
     try:
         r = requests.get(
             f"{ONET_BASE_URL}/online/occupations/{code}/summary/interests",
@@ -179,11 +150,6 @@ def _fetch_interests(code, api_key):
 
 
 def _fetch_skills(code, api_key):
-    """
-    Fetch top 6 skills for one occupation.
-    Verified endpoint: GET /online/occupations/{code}/summary/skills
-    Returns list of skill name strings.
-    """
     try:
         r = requests.get(
             f"{ONET_BASE_URL}/online/occupations/{code}/summary/skills",
@@ -202,27 +168,6 @@ def _fetch_skills(code, api_key):
 
 
 def fetch_all_onet_careers(api_key, supabase):
-    """
-    Main function — fetches all 1016 O*NET occupations with details.
-
-    Flow:
-    1. Check Supabase cache (valid 30 days) — return if fresh
-    2. Fetch all occupation codes and titles from O*NET
-    3. For each occupation:
-       - Fetch RIASEC from interests endpoint
-       - Fetch skills from skills endpoint
-       - Map stream and sector from SOC code prefix (no extra API call)
-    4. Save to Supabase cache
-    5. Return as list of career dicts
-
-    Args:
-        api_key  — O*NET API key (ONET_API_KEY in Streamlit secrets)
-        supabase — Supabase client
-
-    Returns list of dicts with keys:
-        onet_code, job_title, sector, 12th_stream,
-        primary_riasec, secondary_riasec, core_skills, cached_at
-    """
     # Check Supabase cache
     try:
         cached = supabase.table("onet_careers").select("*").execute()
@@ -242,8 +187,8 @@ def fetch_all_onet_careers(api_key, supabase):
 
     occupations = _fetch_all_occupations(api_key)
     print(f"Total occupations found: {len(occupations)}")
-    
-    # ── Apply India relevance filter ──────────────────────────
+
+    # Apply India relevance filter
     occupations = [
         occ for occ in occupations
         if is_india_relevant(
@@ -253,7 +198,6 @@ def fetch_all_onet_careers(api_key, supabase):
         )
     ]
     print(f"After India filter: {len(occupations)} occupations")
-
 
     if not occupations:
         print("No occupations returned — check ONET_API_KEY in Streamlit secrets")
@@ -270,11 +214,9 @@ def fetch_all_onet_careers(api_key, supabase):
         if (i + 1) % 100 == 0:
             print(f"Processing {i+1}/{total} occupations...")
 
-        # Fetch RIASEC and skills from O*NET
         primary, secondary = _fetch_interests(code, api_key)
         skills             = _fetch_skills(code, api_key)
 
-        # Map stream and sector from SOC prefix — no extra API call needed
         stream = SOC_TO_STREAM.get(prefix, "Vocational")
         sector = SOC_TO_SECTOR.get(prefix, "General")
 
@@ -289,9 +231,9 @@ def fetch_all_onet_careers(api_key, supabase):
             "cached_at":        datetime.now(timezone.utc).isoformat()
         })
 
-        time.sleep(0.1)  # Respect O*NET rate limits
+        time.sleep(0.1)
 
-   print(f"Fetched details for {len(careers)} careers")
+    print(f"Fetched details for {len(careers)} careers")
 
     # Save to Supabase in batches of 50
     try:
@@ -307,12 +249,10 @@ def fetch_all_onet_careers(api_key, supabase):
 
 def rebuild_pinecone_after_refresh(df, pinecone_index, sentence_model):
     """
-    Call this after load_careers() returns the merged DataFrame
-    whenever a fresh O*NET fetch has just happened.
-    Rebuilds the entire Pinecone index to stay in sync with the career list.
+    Wipe and rebuild the entire Pinecone index from the merged DataFrame.
+    Called from app.py after a fresh O*NET fetch cycle.
     """
     try:
-        # Wipe the existing index first so stale vectors don't linger
         pinecone_index.delete(delete_all=True)
         print("Pinecone index cleared")
     except Exception as e:
