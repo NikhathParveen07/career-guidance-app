@@ -1,10 +1,7 @@
 # ============================================
 # backend/data_loader.py
-# Loads career data from O*NET API via onet_loader
-# Falls back to CSV if O*NET unavailable
 # ============================================
 import os
-import sys
 import pandas as pd
 import streamlit as st
 from pinecone import Pinecone
