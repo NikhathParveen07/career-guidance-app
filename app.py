@@ -261,7 +261,14 @@ def _status_pill(cid, decisions):
 
 
 def main():
-    df             = load_careers()
+    df, pinecone_needs_rebuild = load_careers()
+
+    # Rebuild Pinecone index if O*NET was freshly fetched this cycle
+    if pinecone_needs_rebuild and not st.session_state.get("pinecone_rebuilt"):
+        from backend.onet_loader import rebuild_pinecone_after_refresh
+        with st.spinner("🔄 Updating career search index..."):
+            rebuild_pinecone_after_refresh(df, index, sentence_model)
+        st.session_state["pinecone_rebuilt"] = True
     sentence_model = load_sentence_model()
     index          = load_pinecone_index()
     supabase       = load_supabase()
