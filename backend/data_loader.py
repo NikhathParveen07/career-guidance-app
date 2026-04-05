@@ -47,9 +47,6 @@ def load_careers():
                 if "onet_code" in df.columns and "nco_id" not in df.columns:
                     df["nco_id"] = df["onet_code"]
 
-                # Check if this was a fresh fetch or served from cache
-                # fetch_all_onet_careers prints "Loaded X from Supabase cache"
-                # when cached — we track it via a session flag instead
                 if not st.session_state.get("onet_cache_loaded"):
                     fresh_fetch = True
                     st.session_state["onet_cache_loaded"] = True
@@ -91,6 +88,8 @@ def load_careers():
         print(f"Career list after merge: {len(df)} careers")
 
     return df, fresh_fetch
+
+
 @st.cache_resource
 def load_sentence_model():
     return SentenceTransformer('all-MiniLM-L6-v2')
