@@ -1,13 +1,6 @@
 # ============================================
 # backend/hybrid_engine.py
 # Combines content-based and collaborative scores
-# into a single ranked recommendation list.
-#
-# Adaptive weighting strategy (Do et al. [R8]):
-#   Weights shift based on real interaction volume.
-#   Cold start → pure content.
-#   As real Keep/Drop data accumulates → collaborative
-#   component earns progressively more influence.
 # ============================================
 import numpy as np
 import requests
@@ -21,18 +14,8 @@ from backend.content_filter import (
 
 def get_adaptive_weights(n_real_interactions):
     """
-    Compute content and collaborative weights adaptively
-    based on how many real Keep/Drop interactions exist.
-
-    Thresholds:
-      0          → pure content (cold start, no real data)
-      1–9        → mostly content, collab activates lightly
-      10–29      → balanced hybrid
-      30+        → collab earns equal footing with content
-
-    Directly implements the adaptive combination principle
-    from Do et al. [R8], grounding collaborative influence
-    only when sufficient real peer behaviour is observed.
+    Compute content and collaborative weights based on real interaction volume.
+    Cold start → pure content. As real data grows → collab earns more weight.
     """
     if n_real_interactions == 0:
         return 1.0, 0.0
@@ -47,7 +30,6 @@ def get_adaptive_weights(n_real_interactions):
 def get_real_interaction_count(supabase):
     """
     Count total real Keep/Drop interactions in Supabase.
-    Used to determine adaptive weights for this session.
     Returns 0 safely if Supabase is unavailable.
     """
     try:
@@ -62,8 +44,15 @@ def expand_query(query, groq_key):
     Expand vague student interest queries into richer semantic descriptions.
     Only runs if query is fewer than 15 words.
     Returns (expanded_query, was_expanded) tuple.
+    Falls back to original query on any failure.
     """
+    if not query or not query.strip():
+        return query, False
+
     if len(query.split()) > 15:
+        return query, False
+
+    if not groq_key:
         return query, False
 
     prompt = (
@@ -92,19 +81,22 @@ def expand_query(query, groq_key):
             timeout=10
         )
         if r.status_code == 200:
-            expanded = r.json()["choices"][0]["message"]["content"].strip()
-            if expanded and expanded.lower() != query.lower():
-                return expanded, True
-    except Exception:
-        pass
+            data = r.json()
+            # Guard against unexpected response shape
+            choices = data.get("choices", [])
+            if choices:
+                expanded = choices[0].get("message", {}).get("content", "").strip()
+                if expanded and expanded.lower() != query.lower() and len(expanded) > 10:
+                    return expanded, True
+    except Exception as e:
+        print(f"expand_query failed: {e}")
 
     return query, False
 
 
 def get_collab_scores(user_id, n_careers, svd_model):
     """
-    Compute and normalise collaborative scores for all careers.
-    Normalisation maps raw SVD predictions to [0, 1] range.
+    Compute and normalise collaborative scores for all careers to [0, 1].
     """
     raw_scores = {}
     for cid in range(n_careers):
@@ -127,16 +119,36 @@ def get_recommendations(user_id, query, student_stream, riasec_top2,
                         supabase, is_cold_start=True, top_k=10):
     """
     Full hybrid recommendation pipeline with adaptive weighting.
-    Weights are determined by real Keep/Drop interaction volume.
+    Returns list of recommendation dicts sorted by final_score descending.
     """
+    if not query or df.empty:
+        return []
+
     n_real = get_real_interaction_count(supabase)
     content_weight, collab_weight = get_adaptive_weights(n_real)
 
-    matches = search_careers(query, sentence_model, index, top_k=20)
+    # Override to cold start if explicitly requested
+    if is_cold_start:
+        content_weight = 1.0
+        collab_weight  = 0.0
+
+    try:
+        matches = search_careers(query, sentence_model, index, top_k=20)
+    except Exception as e:
+        print(f"Pinecone search failed: {e}")
+        return []
+
+    if not matches:
+        return []
 
     collab_scores = {}
     if collab_weight > 0:
-        collab_scores = get_collab_scores(user_id, len(df), svd_model)
+        try:
+            collab_scores = get_collab_scores(user_id, len(df), svd_model)
+        except Exception as e:
+            print(f"Collab scoring failed, falling back to content only: {e}")
+            content_weight = 1.0
+            collab_weight  = 0.0
 
     results = []
     for match in matches:
@@ -149,7 +161,7 @@ def get_recommendations(user_id, query, student_stream, riasec_top2,
             continue
 
         career_row    = df.iloc[cid]
-        career_stream = match['metadata']['stream']
+        career_stream = match['metadata'].get('stream', '')
         content_score = match['score']
 
         collab_score = collab_scores.get(cid, 0.5) if collab_weight > 0 else 0.0
@@ -167,10 +179,10 @@ def get_recommendations(user_id, query, student_stream, riasec_top2,
             'career_id':        cid,
             'career':           career_row['job_title'],
             'stream':           career_stream,
-            'sector':           career_row['sector'],
-            'primary_riasec':   career_row['primary_riasec'],
-            'secondary_riasec': career_row['secondary_riasec'],
-            'core_skills':      career_row['core_skills'],
+            'sector':           career_row.get('sector', ''),
+            'primary_riasec':   career_row.get('primary_riasec', ''),
+            'secondary_riasec': career_row.get('secondary_riasec', ''),
+            'core_skills':      career_row.get('core_skills', ''),
             'final_score':      round(final_score,   4),
             'content_score':    round(content_score, 4),
             'collab_score':     round(collab_score,  4),
