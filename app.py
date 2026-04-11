@@ -32,7 +32,6 @@ st.markdown("""
     .hero h1 { font-size: 2.5rem; font-weight: 700; margin: 0; color: white; }
     .hero p  { font-size: 1.1rem; opacity: 0.85; margin-top: 0.5rem; color: white; }
 
-    /* ── Career Cards ── */
     .career-card {
         background: #1e2530; border-radius: 12px; padding: 1.2rem 1.5rem;
         margin-bottom: 0.4rem; box-shadow: 0 2px 8px rgba(0,0,0,0.3);
@@ -93,7 +92,6 @@ st.markdown("""
         display: inline-block; border: 1px solid #37415133;
     }
 
-    /* ── Rest of styles unchanged ── */
     .expand-box {
         background: #1a2a3a; border-radius: 10px; padding: 1rem 1.2rem;
         border: 1px solid #2a4a6a; margin: 0.8rem 0;
@@ -260,6 +258,14 @@ def _status_pill(cid, decisions):
     return '<span class="status-pill-none">Not decided yet</span>'
 
 
+def _safe_secret(key, default=None):
+    """Get a secret safely, returning default if not set."""
+    try:
+        return st.secrets[key]
+    except (KeyError, Exception):
+        return default
+
+
 def main():
     df, pinecone_needs_rebuild = load_careers()
     sentence_model = load_sentence_model()
@@ -267,14 +273,17 @@ def main():
     supabase       = load_supabase()
     svd_model      = load_svd_model(supabase)
 
-    # Rebuild Pinecone index if O*NET was freshly fetched this cycle
+    # Rebuild Pinecone index only when O*NET freshly fetched AND not already done this session
     if pinecone_needs_rebuild and not st.session_state.get("pinecone_rebuilt"):
         from backend.onet_loader import rebuild_pinecone_after_refresh
         with st.spinner("🔄 Updating career search index..."):
             rebuild_pinecone_after_refresh(df, index, sentence_model)
         st.session_state["pinecone_rebuilt"] = True
 
-    
+    # Bail early if career data failed to load
+    if df.empty:
+        st.error("Career data could not be loaded. Check your data files and secrets.")
+        return
 
     for key, default in [
         ('screen', 'profile'), ('profile', {}), ('riasec', {}),
@@ -326,16 +335,20 @@ def main():
             submitted = st.form_submit_button("Check My Interests →")
 
         if submitted:
-            if not name or not query:
-                st.error("Please fill in your name and interests.")
+            if not name or not name.strip():
+                st.error("Please enter your name.")
+            elif not query or not query.strip():
+                st.error("Please describe your interests.")
             else:
                 st.session_state._temp_profile = {
                     "student_id": f"STU_{str(uuid.uuid4())[:8].upper()}",
-                    "name": name, "stream": stream, "marks": marks,
-                    "city": city, "state": state, "budget": budget, "query": query
+                    "name": name.strip(), "stream": stream, "marks": marks,
+                    "city": city, "state": state, "budget": budget,
+                    "query": query.strip()
                 }
+                groq_key = _safe_secret("GROQ_API_KEY")
                 with st.spinner("✨ Understanding your interests..."):
-                    expanded, was_expanded = expand_query(query, st.secrets["GROQ_API_KEY"])
+                    expanded, was_expanded = expand_query(query.strip(), groq_key)
                 st.session_state._temp_expanded     = expanded
                 st.session_state._temp_was_expanded = was_expanded
                 st.session_state.show_expansion     = True
@@ -383,6 +396,7 @@ def main():
                         st.session_state.screen             = 'quiz'
                         st.rerun()
             else:
+                # No expansion happened — proceed directly
                 st.session_state.profile            = temp_profile
                 st.session_state.expanded_query     = original
                 st.session_state.query_was_expanded = False
@@ -398,7 +412,7 @@ def main():
     # ══════════════════════════════════════════════════════════
     elif st.session_state.screen == 'quiz':
         profile = st.session_state.profile
-        st.markdown(f"### 🧭 Career Interest Quiz — {profile['name']}")
+        st.markdown(f"### 🧭 Career Interest Quiz — {profile.get('name', '')}")
         st.markdown("Rate each activity from **1** (not interested) to **5** (very interested)")
         st.markdown("")
         with st.form("riasec_form"):
@@ -430,21 +444,30 @@ def main():
         st.markdown("### 🎯 Your Career Recommendations")
 
         c1,c2,c3,c4 = st.columns(4)
-        with c1: st.markdown(f'<div class="metric-box"><h3>{profile["stream"]}</h3><p>Your Stream</p></div>', unsafe_allow_html=True)
-        with c2: st.markdown(f'<div class="metric-box"><h3>{riasec["riasec_code"]}</h3><p>RIASEC Code</p></div>', unsafe_allow_html=True)
-        with c3: st.markdown(f'<div class="metric-box"><h3>{profile["marks"]}%</h3><p>Your Marks</p></div>', unsafe_allow_html=True)
-        with c4: st.markdown(f'<div class="metric-box"><h3>{RIASEC_LABELS[riasec["top2"][0]]}</h3><p>Primary Personality</p></div>', unsafe_allow_html=True)
+        with c1: st.markdown(f'<div class="metric-box"><h3>{profile.get("stream","")}</h3><p>Your Stream</p></div>', unsafe_allow_html=True)
+        with c2: st.markdown(f'<div class="metric-box"><h3>{riasec.get("riasec_code","")}</h3><p>RIASEC Code</p></div>', unsafe_allow_html=True)
+        with c3: st.markdown(f'<div class="metric-box"><h3>{profile.get("marks","")}%</h3><p>Your Marks</p></div>', unsafe_allow_html=True)
+        with c4:
+            top_type = riasec.get("top2", ["R"])[0]
+            st.markdown(f'<div class="metric-box"><h3>{RIASEC_LABELS.get(top_type, top_type)}</h3><p>Primary Personality</p></div>', unsafe_allow_html=True)
         st.markdown("")
 
         with st.expander("📊 View Your Full RIASEC Profile"):
-            for rtype, score in riasec['ranked']:
-                st.markdown(f"**{RIASEC_LABELS[rtype]}** ({rtype}) — {score}/10")
+            for rtype, score in riasec.get('ranked', []):
+                st.markdown(f"**{RIASEC_LABELS.get(rtype, rtype)}** ({rtype}) — {score}/10")
                 st.progress(int((score/10)*100)/100)
-                st.caption(RIASEC_DESCRIPTIONS[rtype])
+                st.caption(RIASEC_DESCRIPTIONS.get(rtype, ""))
         st.markdown("---")
 
         if not st.session_state.results:
-            final_query = st.session_state.expanded_query or profile['query']
+            final_query = st.session_state.expanded_query or profile.get('query', '')
+            if not final_query:
+                st.error("No query found. Please go back to profile and enter your interests.")
+                if st.button("← Back to Profile"):
+                    st.session_state.screen = 'profile'
+                    st.rerun()
+                return
+
             with st.spinner("🔄 Finding your best career matches..."):
                 st.session_state.results = get_recommendations(
                     user_id=profile['student_id'], query=final_query,
@@ -456,10 +479,12 @@ def main():
 
         results = st.session_state.results
         if not results:
-            st.info("Processing your interests...")
+            st.warning("No recommendations found. This can happen if the search index is empty. Try rebuilding the Pinecone index.")
+            if st.button("← Back to Profile"):
+                st.session_state.screen = 'profile'
+                st.rerun()
             return
 
-        # ── Counts ───────────────────────────────────────────
         kept_count    = sum(1 for r in results if decisions.get(r['career_id']) == 'keep')
         dropped_count = sum(1 for r in results if decisions.get(r['career_id']) == 'drop')
 
@@ -472,7 +497,6 @@ def main():
         st.caption("Keep careers you want to explore further. Drop ones that don't feel right. You can change your mind anytime.")
         st.markdown("")
 
-        # ── Sort: kept → neutral → dropped ───────────────────
         def _sort_key(r):
             d = decisions.get(r['career_id'], '')
             return 0 if d == 'keep' else (2 if d == 'drop' else 1)
@@ -485,7 +509,6 @@ def main():
             decision     = decisions.get(cid, '')
             section      = _sort_key(rec)
 
-            # ── Section header labels ─────────────────────────
             if section != prev_section:
                 if section == 0:
                     st.markdown('<span class="section-header-kept">✓ Kept</span>', unsafe_allow_html=True)
@@ -496,14 +519,14 @@ def main():
                 prev_section = section
 
             badge       = STREAM_BADGE.get(rec['stream'], 'badge-science')
-            riasec_icon = ("⭐⭐" if rec['riasec_boost']==1.3 else "⭐" if rec['riasec_boost']==1.15 else "")
-            stream_icon = "🎓" if rec['stream_boost']>1.0 else ""
+            riasec_icon = ("⭐⭐" if rec.get('riasec_boost')==1.3 else "⭐" if rec.get('riasec_boost')==1.15 else "")
+            stream_icon = "🎓" if rec.get('stream_boost', 1.0) > 1.0 else ""
             interest, personality, stream_exp = generate_explanation(
-                rec, profile['query'], riasec['top2'], profile['stream']
+                rec, profile.get('query', ''), riasec['top2'], profile['stream']
             )
 
-            # Original rank stays fixed regardless of reordering
             original_rank = next((j+1 for j, r in enumerate(results) if r['career_id'] == cid), i+1)
+            match_pct = int(rec.get('final_score', 0) * 100)
 
             st.markdown(f"""
             <div class="{_card_class(cid, decisions)}">
@@ -512,7 +535,7 @@ def main():
                         #{original_rank} {rec['career']} {stream_icon}{riasec_icon}
                     </span>
                     <div style="text-align:right">
-                        <span style="font-size:1.3rem;font-weight:700;color:#60a5fa">{int(rec['final_score']*100)}%</span><br>
+                        <span style="font-size:1.3rem;font-weight:700;color:#60a5fa">{match_pct}%</span><br>
                         <small style="color:#888">match score</small>
                     </div>
                 </div>
@@ -530,7 +553,6 @@ def main():
             </div>
             """, unsafe_allow_html=True)
 
-            # ── Keep / Drop / View Details ────────────────────
             btn1, btn2, btn3 = st.columns([1, 1, 2])
 
             with btn1:
@@ -556,7 +578,7 @@ def main():
                     st.rerun()
 
             with btn3:
-                if st.button(f"View Details →", key=f"detail_{cid}", use_container_width=True):
+                if st.button("View Details →", key=f"detail_{cid}", use_container_width=True):
                     st.session_state.selected_career = rec
                     st.session_state.screen = 'detail'
                     st.rerun()
@@ -571,172 +593,272 @@ def main():
             st.rerun()
 
     # ══════════════════════════════════════════════════════════
-    # SCREEN 4 — CAREER DETAIL (unchanged)
+    # SCREEN 4 — CAREER DETAIL
     # ══════════════════════════════════════════════════════════
     elif st.session_state.screen == 'detail':
         rec     = st.session_state.selected_career
         profile = st.session_state.profile
         if not rec:
-            st.session_state.screen = 'results'; st.rerun()
+            st.session_state.screen = 'results'
+            st.rerun()
+            return
 
-        badge = STREAM_BADGE.get(rec['stream'], 'badge-science')
+        badge = STREAM_BADGE.get(rec.get('stream', ''), 'badge-science')
         state = profile.get('state', '')
 
         st.markdown(f"### 🗺️ {rec['career']}")
         st.markdown(f"""
-        <span class="badge {badge}">{rec['stream']}</span>
-        <span class="badge" style="background:#2a3040;color:#aabbcc">{rec['sector']}</span>
-        <span class="badge" style="background:#1e2e40;color:#93c5fd">RIASEC: {rec['primary_riasec']}/{rec['secondary_riasec']}</span>
+        <span class="badge {badge}">{rec.get('stream','')}</span>
+        <span class="badge" style="background:#2a3040;color:#aabbcc">{rec.get('sector','')}</span>
+        <span class="badge" style="background:#1e2e40;color:#93c5fd">RIASEC: {rec.get('primary_riasec','')}/{rec.get('secondary_riasec','')}</span>
         """, unsafe_allow_html=True)
         st.markdown("")
 
         tab1, tab2 = st.tabs(["📊 Job Market", "🗺️ Career Pathway"])
 
+        # ── Tab 1: Job Market ─────────────────────────────────
         with tab1:
+            serpapi_key  = _safe_secret("SERPAPI_KEY", "")
+            groq_key     = _safe_secret("GROQ_API_KEY", "")
+            news_api_key = _safe_secret("NEWS_API_KEY", None)
+
             with st.spinner("🌐 Fetching market data..."):
-                market = fetch_full_market_data(
-                    career_title = rec['career'], sector = rec['sector'],
-                    stream       = profile['stream'],
-                    serpapi_key  = st.secrets["SERPAPI_KEY"],
-                    groq_key     = st.secrets["GROQ_API_KEY"],
-                    news_api_key = st.secrets.get("NEWS_API_KEY", None),
-                    supabase     = supabase
-                )
+                try:
+                    market = fetch_full_market_data(
+                        career_title = rec['career'],
+                        sector       = rec.get('sector', ''),
+                        stream       = profile.get('stream', ''),
+                        serpapi_key  = serpapi_key,
+                        groq_key     = groq_key,
+                        news_api_key = news_api_key,
+                        supabase     = supabase
+                    )
+                except Exception as e:
+                    st.error(f"Could not load market data: {e}")
+                    market = None
 
-            future = market["future"]
-            salary = future["salary"]
-            intel  = future["intelligence"]
-            comps  = future["companies"]
+            if not market:
+                st.info("Market data unavailable. Check your API keys in secrets.")
+            else:
+                future = market["future"]
+                salary = future.get("salary", {})
+                intel  = future.get("intelligence", {})
+                comps  = future.get("companies", [])
 
-            outlook     = intel.get("outlook", {})
-            competition = intel.get("competition", {})
-            policy      = intel.get("policy", {})
-            trend       = outlook.get("trend", "Stable")
-            trend_badge = TREND_BADGE.get(trend, "badge-stable")
-            comp_level  = competition.get("level", "Moderate")
-            comp_badge  = COMPETITION_BADGE.get(comp_level, "badge-moderate")
+                outlook     = intel.get("outlook", {})
+                competition = intel.get("competition", {})
+                policy      = intel.get("policy", {})
+                trend       = outlook.get("trend", "Stable")
+                trend_badge = TREND_BADGE.get(trend, "badge-stable")
+                comp_level  = competition.get("level", "Moderate")
+                comp_badge  = COMPETITION_BADGE.get(comp_level, "badge-moderate")
 
-            gov_badge = '<span class="badge-pill badge-govbacked">Government backed</span>' \
-                        if outlook.get("government_backed") else ""
+                gov_badge = '<span class="badge-pill badge-govbacked">Government backed</span>' \
+                            if outlook.get("government_backed") else ""
 
-            st.markdown(f"""
-            <div class="mkt-card">
-                <p class="mkt-card-label">Career outlook</p>
-                <span class="badge-pill {trend_badge}">{trend}</span>{gov_badge}
-                <p class="explain-text">"{outlook.get('explanation','')}"</p>
-                <p class="source-text">{intel.get('source_outlook','') or ''}</p>
-            </div>
-            """, unsafe_allow_html=True)
+                st.markdown(f"""
+                <div class="mkt-card">
+                    <p class="mkt-card-label">Career outlook</p>
+                    <span class="badge-pill {trend_badge}">{trend}</span>{gov_badge}
+                    <p class="explain-text">"{outlook.get('explanation','')}"</p>
+                    <p class="source-text">{intel.get('source_outlook','') or ''}</p>
+                </div>
+                """, unsafe_allow_html=True)
 
-            st.markdown('<p class="mkt-card-label" style="margin-bottom:8px">WHAT YOU WILL EARN</p>', unsafe_allow_html=True)
-            c1, c2, c3 = st.columns(3)
-            sal = salary
-            with c1:
-                st.markdown(f'<div class="sal-card"><p class="sal-label">Starting today</p><p class="sal-value">₹{sal.get("current_low","")}L–₹{sal.get("current_high","")}L/yr</p><p class="sal-explain">Current market average based on live job listings</p><p class="sal-source">{sal.get("salary_source","")}</p></div>', unsafe_allow_html=True)
-            with c2:
-                st.markdown(f'<div class="sal-card highlight"><p class="sal-label">When you graduate ({sal.get("graduation_year","")})</p><p class="sal-value blue">₹{sal.get("projected_low","")}L–₹{sal.get("projected_high","")}L/yr</p><p class="sal-explain">Based on current ₹{sal.get("current_lpa","")}L growing at {sal.get("growth_pct","")}</p><p class="sal-source">{sal.get("growth_source","")}</p></div>', unsafe_allow_html=True)
-            with c3:
-                st.markdown(f'<div class="sal-card"><p class="sal-label">5 years into career</p><p class="sal-value">₹{sal.get("mid_low","")}L–₹{sal.get("mid_high","")}L/yr</p><p class="sal-explain">Professionals with 5 years experience earn 2–2.5x starting salary</p></div>', unsafe_allow_html=True)
+                st.markdown('<p class="mkt-card-label" style="margin-bottom:8px">WHAT YOU WILL EARN</p>', unsafe_allow_html=True)
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    st.markdown(f'<div class="sal-card"><p class="sal-label">Starting today</p><p class="sal-value">₹{salary.get("current_low","?")}L–₹{salary.get("current_high","?")}L/yr</p><p class="sal-explain">Current market average based on live job listings</p><p class="sal-source">{salary.get("salary_source","")}</p></div>', unsafe_allow_html=True)
+                with c2:
+                    st.markdown(f'<div class="sal-card highlight"><p class="sal-label">When you graduate ({salary.get("graduation_year","?")})</p><p class="sal-value blue">₹{salary.get("projected_low","?")}L–₹{salary.get("projected_high","?")}L/yr</p><p class="sal-explain">Based on ₹{salary.get("current_lpa","?")}L growing at {salary.get("growth_pct","?")}</p><p class="sal-source">{salary.get("growth_source","")}</p></div>', unsafe_allow_html=True)
+                with c3:
+                    st.markdown(f'<div class="sal-card"><p class="sal-label">5 years into career</p><p class="sal-value">₹{salary.get("mid_low","?")}L–₹{salary.get("mid_high","?")}L/yr</p><p class="sal-explain">Professionals with 5 years experience typically earn 2–2.5x starting salary</p></div>', unsafe_allow_html=True)
 
-            comp_items = _list_items(comps) if comps else '<div class="list-item"><span class="list-name" style="color:#5a6a7a">No company data available</span></div>'
-            st.markdown(f'<div class="mkt-card"><p class="mkt-card-label">🏢 Top Companies in India that will hire you</p>{comp_items}</div>', unsafe_allow_html=True)
-            st.markdown(f'<div class="mkt-card"><p class="mkt-card-label">How competitive is entry?</p><span class="badge-pill {comp_badge}">{comp_level}</span><p class="explain-text">"{competition.get("explanation","")}"</p></div>', unsafe_allow_html=True)
+                comp_items = _list_items(comps) if comps else '<div class="list-item"><span class="list-name" style="color:#5a6a7a">No company data available</span></div>'
+                st.markdown(f'<div class="mkt-card"><p class="mkt-card-label">🏢 Top Companies in India that will hire you</p>{comp_items}</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="mkt-card"><p class="mkt-card-label">How competitive is entry?</p><span class="badge-pill {comp_badge}">{comp_level}</span><p class="explain-text">"{competition.get("explanation","")}"</p></div>', unsafe_allow_html=True)
 
-            if policy.get("exists") and policy.get("explanation"):
-                st.markdown(f'<div class="mkt-card"><p class="mkt-card-label">Government push</p><p class="explain-text">"{policy.get("explanation","")}"</p><p class="source-text">{intel.get("source_policy","") or ""}</p></div>', unsafe_allow_html=True)
+                if policy.get("exists") and policy.get("explanation"):
+                    st.markdown(f'<div class="mkt-card"><p class="mkt-card-label">Government push</p><p class="explain-text">"{policy.get("explanation","")}"</p><p class="source-text">{intel.get("source_policy","") or ""}</p></div>', unsafe_allow_html=True)
 
-            cache_label = "📦 Cached" if intel.get("from_cache") else "🔴 Live"
-            st.caption(f"{cache_label} · Updated: {intel.get('last_updated','')} · Based on {intel.get('headlines_used', 0)} news sources")
+                cache_label = "📦 Cached" if intel.get("from_cache") else "🔴 Live"
+                st.caption(f"{cache_label} · Updated: {intel.get('last_updated','')} · Based on {intel.get('headlines_used', 0)} news sources")
 
+        # ── Tab 2: Career Pathway ─────────────────────────────
         with tab2:
+            groq_key = _safe_secret("GROQ_API_KEY", "")
+
             with st.spinner("🤖 Generating career roadmap..."):
-                pathway = fetch_career_pathway(rec['career'], rec['stream'], rec['sector'], st.secrets["GROQ_API_KEY"], supabase)
+                try:
+                    pathway = fetch_career_pathway(
+                        rec['career'], rec.get('stream', ''),
+                        rec.get('sector', ''), groq_key, supabase
+                    )
+                except Exception as e:
+                    st.error(f"Could not generate pathway: {e}")
+                    pathway = None
+
             local_data = None
-            if state:
+            if state and groq_key:
                 with st.spinner(f"🔍 Loading {state} specific options..."):
-                    local_data = fetch_local_recommendations(rec['career'], rec['stream'], state, st.secrets["GROQ_API_KEY"], supabase)
+                    try:
+                        local_data = fetch_local_recommendations(
+                            rec['career'], rec.get('stream', ''),
+                            state, groq_key, supabase
+                        )
+                    except Exception as e:
+                        print(f"Local recommendations failed: {e}")
+                        local_data = None
 
             if not pathway:
-                st.warning("Could not generate pathway. Please try again.")
+                st.warning("Could not generate career pathway. Check your GROQ_API_KEY in secrets.")
             else:
                 st.markdown("---")
+
+                # After Class 12 + Courses
                 col1, col2 = st.columns(2)
                 with col1:
                     st.markdown("**📚 Steps After Class 12**")
-                    for step in pathway.get("after_class12", []):
-                        st.markdown(f'<div class="step-box">→ {step}</div>', unsafe_allow_html=True)
+                    steps_list = pathway.get("after_class12", [])
+                    if steps_list:
+                        for step in steps_list:
+                            st.markdown(f'<div class="step-box">→ {step}</div>', unsafe_allow_html=True)
+                    else:
+                        st.info("No steps data available.")
+
                 with col2:
                     st.markdown("**📖 Courses to Take**")
-                    for course in pathway.get("courses", []):
-                        st.markdown(f'<div class="course-box"><b>{course.get("name","")}</b><br><small style="color:#8899aa">{course.get("duration","")} • {course.get("type","")}</small></div>', unsafe_allow_html=True)
+                    courses = pathway.get("courses", [])
+                    if courses:
+                        for course in courses:
+                            name     = course.get("name", "")
+                            duration = course.get("duration", "")
+                            ctype    = course.get("type", "")
+                            st.markdown(f'<div class="course-box"><b>{name}</b><br><small style="color:#8899aa">{duration} • {ctype}</small></div>', unsafe_allow_html=True)
+                    else:
+                        st.info("No course data available.")
 
                 st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
+
+                # Exams
                 col3, col4 = st.columns(2)
                 with col3:
                     st.markdown("**📝 National Entrance Exams**")
-                    for exam in pathway.get("national_exams", []):
-                        st.markdown(f'<div class="exam-box"><b>{exam.get("exam","")}</b><br><small style="color:#8899aa">By {exam.get("conducted_by","")} &nbsp;•&nbsp; {exam.get("frequency","")}</small></div>', unsafe_allow_html=True)
+                    exams = pathway.get("national_exams", [])
+                    if exams:
+                        for exam in exams:
+                            st.markdown(f'<div class="exam-box"><b>{exam.get("exam","")}</b><br><small style="color:#8899aa">By {exam.get("conducted_by","")} &nbsp;•&nbsp; {exam.get("frequency","")}</small></div>', unsafe_allow_html=True)
+                    else:
+                        st.info("No national exam data.")
+
                 with col4:
                     st.markdown(f"**📝 State Entrance Exams — {state or 'Your State'}**")
                     if local_data and local_data.get("state_exams"):
-                        for exam in local_data.get("state_exams", []):
+                        for exam in local_data["state_exams"]:
                             st.markdown(f'<div class="exam-box" style="border-left-color:#f97316"><b>{exam.get("exam","")}</b><br><small style="color:#8899aa">By {exam.get("conducted_by","")} &nbsp;•&nbsp; {exam.get("eligibility","")}</small></div>', unsafe_allow_html=True)
-                    else:
+                    elif not state:
                         st.info("Select your state on the profile page for state-specific exams.")
+                    else:
+                        st.info(f"No state-specific exams found for {state}.")
 
                 st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
+
+                # Colleges
                 col5, col6 = st.columns(2)
                 with col5:
                     st.markdown("**🎓 Top National Colleges**")
-                    for college in pathway.get("top_colleges", []):
-                        st.markdown(f'<div class="step-box">🏫 <b>{college.get("name","")}</b> — {college.get("city","")}</div>', unsafe_allow_html=True)
+                    colleges = pathway.get("top_colleges", [])
+                    if colleges:
+                        for college in colleges:
+                            st.markdown(f'<div class="step-box">🏫 <b>{college.get("name","")}</b> — {college.get("city","")}</div>', unsafe_allow_html=True)
+                    else:
+                        st.info("No college data available.")
+
                 with col6:
                     st.markdown(f"**🏫 Colleges in {state or 'Your State'}**")
                     if local_data and local_data.get("state_colleges"):
-                        for college in local_data.get("state_colleges", []):
+                        for college in local_data["state_colleges"]:
                             st.markdown(f'<div class="step-box" style="border-left-color:#86efac"><b>{college.get("name","")}</b><br><small style="color:#8899aa">{college.get("city","")} • <span style="color:#86efac">{college.get("type","")}</span></small></div>', unsafe_allow_html=True)
-                    else:
+                    elif not state:
                         st.info("Select your state on the profile page for state colleges.")
+                    else:
+                        st.info(f"No state colleges found for {state}.")
 
                 st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
+
+                # Skills
                 st.markdown("**💡 Skills to Develop**")
                 skills = pathway.get("skills_to_develop", [])
+                # Fallback: derive from core_skills if LLM returned nothing
                 if not skills and rec.get('core_skills'):
-                    skills = [{"skill": s.strip()} for s in rec['core_skills'].split(',') if s.strip()][:6]
+                    skills = [
+                        {"skill": s.strip(), "level": ""}
+                        for s in rec['core_skills'].split(',') if s.strip()
+                    ][:6]
+
                 if skills:
                     skill_cols = st.columns(3)
-                    for i, skill in enumerate(skills):
-                        with skill_cols[i % 3]:
-                            name  = skill.get('skill', skill) if isinstance(skill, dict) else skill
-                            level = skill.get('level', '') if isinstance(skill, dict) else ''
-                            st.markdown(f'<div class="skill-box"><b>{name}</b>{"<br><small style=color:#8899aa>" + level + "</small>" if level else ""}</div>', unsafe_allow_html=True)
+                    for idx, skill in enumerate(skills):
+                        with skill_cols[idx % 3]:
+                            if isinstance(skill, dict):
+                                name  = skill.get('skill', '')
+                                level = skill.get('level', '')
+                            else:
+                                name  = str(skill)
+                                level = ''
+                            level_html = f'<br><small style="color:#8899aa">{level}</small>' if level else ''
+                            st.markdown(f'<div class="skill-box"><b>{name}</b>{level_html}</div>', unsafe_allow_html=True)
+                else:
+                    st.info("No skills data available.")
 
                 st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
+
+                # Scholarships
                 col7, col8 = st.columns(2)
                 with col7:
                     st.markdown("**🎓 National Scholarships**")
-                    for s in pathway.get("national_scholarships", []):
-                        st.markdown(f'<div class="scholarship-box"><b>{s.get("name","")}</b><br><small style="color:#8899aa">💰 {s.get("amount","")} &nbsp;•&nbsp; {s.get("eligibility","")}</small></div>', unsafe_allow_html=True)
+                    scholarships = pathway.get("national_scholarships", [])
+                    if scholarships:
+                        for s in scholarships:
+                            st.markdown(f'<div class="scholarship-box"><b>{s.get("name","")}</b><br><small style="color:#8899aa">💰 {s.get("amount","")} &nbsp;•&nbsp; {s.get("eligibility","")}</small></div>', unsafe_allow_html=True)
+                    else:
+                        st.info("No national scholarship data.")
+
                 with col8:
                     st.markdown(f"**🎓 Scholarships in {state or 'Your State'}**")
                     if local_data and local_data.get("state_scholarships"):
-                        for s in local_data.get("state_scholarships", []):
+                        for s in local_data["state_scholarships"]:
                             st.markdown(f'<div class="scholarship-box" style="border-left-color:#fcd34d"><b>{s.get("name","")}</b><br><small style="color:#8899aa">💰 {s.get("amount","")} &nbsp;•&nbsp; {s.get("eligibility","")}</small></div>', unsafe_allow_html=True)
-                    else:
+                    elif not state:
                         st.info("Select your state on the profile page for state scholarships.")
+                    else:
+                        st.info(f"No state scholarships found for {state}.")
 
                 st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
+
+                # Timeline + Progression
                 col9, col10 = st.columns(2)
                 with col9:
                     st.markdown("**📅 Year-by-Year Timeline**")
-                    for t in pathway.get("timeline", []):
-                        st.markdown(f'<div class="step-box"><b>{t.get("year","")}</b> → {t.get("milestone","")}</div>', unsafe_allow_html=True)
+                    timeline = pathway.get("timeline", [])
+                    if timeline:
+                        for t in timeline:
+                            st.markdown(f'<div class="step-box"><b>{t.get("year","")}</b> → {t.get("milestone","")}</div>', unsafe_allow_html=True)
+                    else:
+                        st.info("No timeline data.")
+
                 with col10:
                     st.markdown("**📈 Career Progression**")
-                    for level in pathway.get("career_progression", []):
-                        st.markdown(f'<div class="step-box">→ {level}</div>', unsafe_allow_html=True)
-                    if pathway.get("avg_starting_salary"):
-                        st.markdown(f'<div class="metric-box" style="margin-top:1rem"><h3 style="font-size:1.1rem">💰 {pathway["avg_starting_salary"]}</h3><p>Average Starting Salary</p></div>', unsafe_allow_html=True)
+                    progression = pathway.get("career_progression", [])
+                    if progression:
+                        for level in progression:
+                            st.markdown(f'<div class="step-box">→ {level}</div>', unsafe_allow_html=True)
+                    else:
+                        st.info("No progression data.")
+
+                    avg_sal = pathway.get("avg_starting_salary", "")
+                    if avg_sal and avg_sal != "Not available":
+                        st.markdown(f'<div class="metric-box" style="margin-top:1rem"><h3 style="font-size:1.1rem">💰 {avg_sal}</h3><p>Average Starting Salary</p></div>', unsafe_allow_html=True)
 
                 st.caption("⚠️ AI-generated roadmap — verify exam and college details at official websites.")
 
