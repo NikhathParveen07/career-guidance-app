@@ -2,12 +2,6 @@
 # backend/pathway.py
 # Generate structured Indian career roadmaps
 # using Groq-hosted Llama 3.3 LLM
-#
-# Two functions:
-#   1. fetch_career_pathway        — national roadmap
-#   2. fetch_local_recommendations — state-specific data
-#
-# Results cached in Supabase for reuse across sessions
 # ============================================
 import requests
 import json
@@ -20,10 +14,6 @@ GROQ_MODEL = "llama-3.3-70b-versatile"
 # ── Shared helpers ────────────────────────────────────────────
 
 def _call_groq(prompt, groq_key):
-    """
-    Call Groq API and return raw text response.
-    Shows Streamlit error on failure for easy debugging.
-    """
     try:
         response = requests.post(
             GROQ_URL,
@@ -35,7 +25,7 @@ def _call_groq(prompt, groq_key):
                 "model":       GROQ_MODEL,
                 "messages":    [{"role": "user", "content": prompt}],
                 "temperature": 0.3,
-                "max_tokens":  1500
+                "max_tokens":  1800
             },
             timeout=30
         )
@@ -61,10 +51,6 @@ def _call_groq(prompt, groq_key):
 
 
 def _parse_json_response(raw_text):
-    """
-    Parse JSON from LLM response.
-    Handles markdown fences and extracts JSON object as fallback.
-    """
     if not raw_text:
         return None
 
@@ -87,9 +73,10 @@ def _parse_json_response(raw_text):
 
 def _build_pathway_prompt(career_title, stream, sector):
     """
-    National roadmap prompt.
-    Note: state_exams removed — state info handled by
-    fetch_local_recommendations separately.
+    Prompt keys must exactly match what app.py reads:
+      after_class12, courses, national_exams, national_scholarships,
+      top_colleges, timeline, career_progression, avg_starting_salary,
+      skills_to_develop
     """
     return f"""You are a career counsellor specialising in the Indian education system.
 Generate a career roadmap for an Indian Class 12 student pursuing:
@@ -100,26 +87,37 @@ Sector: {sector}
 Return ONLY a valid JSON object with exactly these keys, no extra text, no markdown:
 {{
   "after_class12": ["step 1", "step 2", "step 3"],
+  "courses": [
+    {{"name": "course name", "duration": "X years", "type": "Bachelor/Diploma/Certificate"}}
+  ],
   "national_exams": [
     {{"exam": "exam name", "conducted_by": "conducting body", "frequency": "once/twice a year"}}
+  ],
+  "national_scholarships": [
+    {{"name": "scholarship name", "amount": "amount per year", "eligibility": "criteria"}}
   ],
   "top_colleges": [
     {{"name": "college name", "city": "city"}}
   ],
+  "skills_to_develop": [
+    {{"skill": "skill name", "level": "Beginner/Intermediate/Advanced"}}
+  ],
   "timeline": [
     {{"year": "Year 1", "milestone": "what happens this year"}}
   ],
-  "career_progression": ["entry level", "mid level", "senior level", "leadership"],
+  "career_progression": ["entry level role", "mid level role", "senior level role", "leadership role"],
   "avg_starting_salary": "X-Y LPA"
 }}
 
-Use real Indian national exam names (JEE, NEET, CLAT, CAT, NIFT, UCEED etc.),
-real national colleges (IITs, NITs, AIIMS, IIMs etc.), realistic Indian salary ranges.
-Return ONLY the JSON object."""
+Rules:
+- Use real Indian national exam names (JEE, NEET, CLAT, CAT, NIFT, UCEED, GATE etc.)
+- Use real national colleges (IITs, NITs, AIIMS, IIMs, NLUs etc.)
+- Use realistic Indian salary ranges in LPA
+- List 3-5 items per array, not more
+- Return ONLY the JSON object, nothing else"""
 
 
 def _get_cached_pathway(career_title, supabase):
-    """Check Supabase for a previously generated national pathway."""
     try:
         result = (supabase
                   .table("career_pathways")
@@ -134,7 +132,6 @@ def _get_cached_pathway(career_title, supabase):
 
 
 def _save_pathway_to_cache(career_title, pathway, supabase):
-    """Save generated national pathway to Supabase cache."""
     try:
         supabase.table("career_pathways").upsert({
             "career_title": career_title,
@@ -147,14 +144,17 @@ def _save_pathway_to_cache(career_title, pathway, supabase):
 def fetch_career_pathway(career_title, stream, sector, groq_key, supabase):
     """
     Get or generate a structured national Indian career roadmap.
-
-    1. Check Supabase cache — return immediately if found
-    2. Generate from Groq LLM
-    3. Cache in Supabase for all future students
-    4. Return pathway dict or None on failure
+    Returns pathway dict or None on failure.
     """
     cached = _get_cached_pathway(career_title, supabase)
     if cached:
+        # Migrate old cache entries missing new keys
+        if "courses" not in cached:
+            cached["courses"] = []
+        if "national_scholarships" not in cached:
+            cached["national_scholarships"] = []
+        if "skills_to_develop" not in cached:
+            cached["skills_to_develop"] = []
         return cached
 
     prompt   = _build_pathway_prompt(career_title, stream, sector)
@@ -164,6 +164,17 @@ def fetch_career_pathway(career_title, stream, sector, groq_key, supabase):
     if pathway is None:
         return None
 
+    # Ensure all expected keys exist even if LLM omitted some
+    pathway.setdefault("after_class12", [])
+    pathway.setdefault("courses", [])
+    pathway.setdefault("national_exams", [])
+    pathway.setdefault("national_scholarships", [])
+    pathway.setdefault("top_colleges", [])
+    pathway.setdefault("skills_to_develop", [])
+    pathway.setdefault("timeline", [])
+    pathway.setdefault("career_progression", [])
+    pathway.setdefault("avg_starting_salary", "Not available")
+
     _save_pathway_to_cache(career_title, pathway, supabase)
     return pathway
 
@@ -171,9 +182,6 @@ def fetch_career_pathway(career_title, stream, sector, groq_key, supabase):
 # ── Function 2: State-Specific Recommendations ───────────────
 
 def _build_local_prompt(career_title, stream, state):
-    """
-    State-specific prompt for colleges, exams, and scholarships.
-    """
     return f"""You are a career counsellor specialising in Indian state-level education.
 
 For a student in {state} pursuing {career_title} from {stream} stream, provide:
@@ -194,27 +202,23 @@ Return ONLY valid JSON with exactly these keys, no extra text:
   ]
 }}
 
-Use only real colleges and exams from {state}.
-Do NOT include national exams like JEE, NEET, CLAT — only {state} specific ones.
-Return ONLY the JSON object."""
+Rules:
+- Use only real colleges and exams from {state}
+- Do NOT include national exams like JEE, NEET, CLAT — only {state} specific ones
+- If no state-specific exams exist, return an empty array for state_exams
+- Return ONLY the JSON object"""
 
 
 def fetch_local_recommendations(career_title, stream, state, groq_key, supabase):
     """
     Fetch state-specific colleges, entrance exams, and scholarships.
-
-    State is passed directly from student profile.
-    Cached in Supabase by career + state combination.
-
-    Returns dict with state_colleges, state_exams, state_scholarships
-    or None if state is empty or generation failed.
+    Returns dict or None if state is empty or generation failed.
     """
     if not state:
         return None
 
     cache_key = f"{career_title}_{state}"
 
-    # Check Supabase cache
     try:
         cached = (supabase.table("local_recommendations")
                           .select("data_json")
@@ -225,7 +229,6 @@ def fetch_local_recommendations(career_title, stream, state, groq_key, supabase)
     except Exception:
         pass
 
-    # Generate from Groq
     prompt   = _build_local_prompt(career_title, stream, state)
     raw_text = _call_groq(prompt, groq_key)
     data     = _parse_json_response(raw_text)
@@ -233,7 +236,11 @@ def fetch_local_recommendations(career_title, stream, state, groq_key, supabase)
     if data is None:
         return None
 
-    # Cache result
+    # Ensure all keys exist
+    data.setdefault("state_colleges", [])
+    data.setdefault("state_exams", [])
+    data.setdefault("state_scholarships", [])
+
     try:
         supabase.table("local_recommendations").upsert({
             "cache_key": cache_key,
