@@ -1,0 +1,581 @@
+# ============================================
+# scripts/setup_and_validate.py
+#
+# ONE-TIME SETUP SCRIPT — RUN ON KAGGLE ONLY
+# Not part of the Streamlit app.
+#
+# What this does:
+#   1. Loads the merged career dataset (O*NET + India-specific)
+#   2. Generates sentence embeddings for every career
+#   3. Wipes and rebuilds the Pinecone vector index from scratch
+#   4. Loads seed interaction data and trains the LightSVD model
+#   5. Runs a smoke test against 4 student profiles to confirm
+#      the full recommendation pipeline is healthy
+#
+# Requires Kaggle Secrets : PINECONE_API_KEY
+# Requires Kaggle Dataset : nikhathparveen07/career-system
+# ============================================
+
+import subprocess, sys
+
+# Install any missing packages before the main imports.
+# Kaggle notebooks don't always have these pre-installed.
+subprocess.run([sys.executable, "-m", "pip", "install", "supabase", "-q"], check=True)
+subprocess.run([sys.executable, "-m", "pip", "install", "pinecone", "-q"], check=True)
+
+from kaggle_secrets import UserSecretsClient
+from supabase import create_client
+from pinecone import Pinecone, ServerlessSpec
+from sentence_transformers import SentenceTransformer
+import pandas as pd
+import numpy as np
+import random
+import time
+import os
+import warnings
+
+warnings.filterwarnings('ignore')
+
+# Kaggle secret store — keeps API keys out of the notebook/code
+secret_client = UserSecretsClient()
+
+print("✅ All imports successful")
+print(f"   numpy  : {np.__version__}")
+print(f"   pandas : {pd.__version__}")
+
+
+# ============================================
+# LIGHTSVD MODEL DEFINITION
+#
+# Lightweight matrix factorisation built on pure NumPy.
+# Implements biased SVD from Koren et al. (2009):
+#   r̂_ui = μ + b_u + b_i + p_u · q_i
+#
+# Why not scikit-surprise?
+#   - No numpy 2.x compatibility issues
+#   - No heavy dependency chain
+#   - Gives us full control over weighted training rows,
+#     which we need to upweight real Keep/Drop signals
+#     over synthetic seed interactions.
+#
+# Note: this is a standalone copy of backend/collaborative.py's
+# LightSVD class, kept here so this script is self-contained
+# and runnable on Kaggle without the full app repo being present.
+# If you update the class in backend/, mirror the change here.
+# ============================================
+
+class LightSVD:
+    def __init__(self, n_factors=50, n_epochs=20, lr=0.005, reg=0.02):
+        self.n_factors   = n_factors   # latent dimension size
+        self.n_epochs    = n_epochs    # full passes over training data
+        self.lr          = lr          # learning rate for SGD updates
+        self.reg         = reg         # L2 regularisation strength
+        self.global_mean = 3.5         # fallback prior before training
+
+    def fit(self, ratings_df):
+        """
+        Train on a DataFrame with columns: student_id, career_id, rating, weight.
+        Weight column allows real interactions to count more than synthetic ones.
+        """
+        users  = ratings_df['student_id'].unique()
+        items  = ratings_df['career_id'].unique()
+
+        # Integer index lookups — faster than string comparisons in the hot loop
+        self.user_index  = {u: i for i, u in enumerate(users)}
+        self.item_index  = {it: i for i, it in enumerate(items)}
+        self.global_mean = ratings_df['rating'].mean()
+
+        n_users = len(users)
+        n_items = len(items)
+
+        # Initialise latent factor matrices with small random values.
+        # Too-large initialisations cause exploding gradients early on.
+        np.random.seed(42)
+        self.P  = np.random.normal(0, 0.1, (n_users, self.n_factors))  # user factors
+        self.Q  = np.random.normal(0, 0.1, (n_items, self.n_factors))  # item factors
+        self.bu = np.zeros(n_users)   # per-user bias terms
+        self.bi = np.zeros(n_items)   # per-item bias terms
+
+        # SGD training loop — one row at a time (online update)
+        for epoch in range(self.n_epochs):
+            for _, row in ratings_df.iterrows():
+                u = self.user_index.get(row['student_id'])
+                i = self.item_index.get(row['career_id'])
+
+                # Skip rows whose user or item wasn't seen at index-build time
+                if u is None or i is None:
+                    continue
+
+                weight = row.get('weight', 1.0)   # 2.0 for real, 1.0 for seed
+                err    = row['rating'] - self._raw(u, i)
+
+                # Gradient descent with L2 regularisation on biases
+                self.bu[u] += self.lr * (weight * err - self.reg * self.bu[u])
+                self.bi[i] += self.lr * (weight * err - self.reg * self.bi[i])
+
+                # Save p_u before updating so Q[i] uses the old p_u value
+                pu = self.P[u].copy()
+                self.P[u] += self.lr * (weight * err * self.Q[i] - self.reg * self.P[u])
+                self.Q[i] += self.lr * (weight * err * pu        - self.reg * self.Q[i])
+
+        print(f"✅ LightSVD trained — {n_users} users, {n_items} items, "
+              f"global mean: {self.global_mean:.2f}")
+        return self
+
+    def _raw(self, u_idx, i_idx):
+        """Raw predicted rating before clipping — internal use only."""
+        return (self.global_mean +
+                self.bu[u_idx] +
+                self.bi[i_idx] +
+                np.dot(self.P[u_idx], self.Q[i_idx]))
+
+    def predict(self, user_id, career_id):
+        """
+        Public prediction interface.
+        Returns a float in [1, 5].
+        Falls back to global mean for unseen users/items (cold start).
+        """
+        u = self.user_index.get(user_id)
+        i = self.item_index.get(career_id)
+        if u is None or i is None:
+            return self.global_mean   # cold-start fallback
+        return float(np.clip(self._raw(u, i), 1, 5))
+
+
+# ============================================
+# STEP 1 — LOAD CAREER DATASET
+#
+# We maintain two career sources:
+#   - onet_careers_filtered.csv : ~1,000 careers from the O*NET API,
+#     pre-filtered for India relevance (see onet_india_filter.py)
+#   - india_specific_careers.csv : ~50 hand-curated Indian careers
+#     (UPSC, CA, IPS, Ayurveda etc.) that O*NET doesn't cover
+#
+# They share the same column schema so we can concat them directly.
+# drop_duplicates on job_title means India-specific entries win when
+# there's a name clash (keep="first" after putting india_df second
+# would flip this — current order keeps onet first which is fine).
+# ============================================
+
+print("\n📂 Loading careers from CSV files...")
+
+# Kaggle dataset mount path — update if you rename the dataset
+BASE = "/kaggle/input/datasets/nikhathparveen07/career-system"
+
+onet_df  = pd.read_csv(f"{BASE}/onet_careers_filtered.csv")
+india_df = pd.read_csv(f"{BASE}/india_specific_careers.csv")
+
+# Both CSVs use '12th_stream' but the rest of the app expects 'stream'
+for frame in [onet_df, india_df]:
+    if "12th_stream" in frame.columns:
+        frame.rename(columns={"12th_stream": "stream"}, inplace=True)
+
+# Pinecone metadata and df.iloc lookups key off onet_code; standardise it
+for frame in [onet_df]:
+    if "onet_code" in frame.columns:
+        frame.rename(columns={"onet_code": "nco_id"}, inplace=True)
+
+# Keep only columns that exist in both sources so concat doesn't create NaN columns
+shared_cols = [c for c in onet_df.columns if c in india_df.columns]
+india_df    = india_df[shared_cols]
+onet_df     = onet_df[shared_cols]
+
+df = pd.concat([onet_df, india_df], ignore_index=True).drop_duplicates(
+    subset="job_title", keep="first"
+).reset_index(drop=True)
+
+print(f"✅ Loaded {len(df)} careers total")
+print(f"\n🎯 Stream distribution:")
+print(df['stream'].value_counts())
+
+
+# ============================================
+# STEP 2 — GENERATE SENTENCE EMBEDDINGS
+#
+# We use all-MiniLM-L6-v2 (384-dim) from sentence-transformers.
+# This is the same model used in production (backend/embeddings.py),
+# so vectors generated here are compatible with live Pinecone queries.
+#
+# The text we embed concatenates job title + sector + RIASEC codes +
+# core skills. This gives the model enough signal to distinguish e.g.
+# "Biologist (Research, IR)" from "Hospital Admissions Clerk (Admin, CS)"
+# even when a student's query is vague like "I like science".
+#
+# Embeddings are saved to disk so you can inspect them or reuse them
+# if you need to rebuild Pinecone without regenerating embeddings.
+# ============================================
+
+print("\n🔄 Loading Sentence Transformer model...")
+sentence_model = SentenceTransformer('all-MiniLM-L6-v2')
+print("✅ Model loaded!")
+
+# Remove stale embedding file if present — always regenerate fresh
+if os.path.exists('career_embeddings.npy'):
+    os.remove('career_embeddings.npy')
+
+# Build the text string that gets embedded for each career.
+# More context = better retrieval. Ordering matters: title first
+# so the model anchors on the most specific token early.
+df['text_for_embedding'] = (
+    df['job_title'].fillna('') + '. ' +
+    df['sector'].fillna('') + '. ' +
+    'RIASEC: ' + df['primary_riasec'].fillna('') + ' ' +
+    df['secondary_riasec'].fillna('') + '. ' +
+    'Skills: ' + df['core_skills'].fillna('')
+)
+
+print(f"🔄 Generating embeddings for {len(df)} careers...")
+embeddings = sentence_model.encode(
+    df['text_for_embedding'].tolist(),
+    show_progress_bar=True,
+    batch_size=64   # bump to 128 if you have a GPU available on Kaggle
+)
+
+np.save('career_embeddings.npy', embeddings)
+print(f"✅ Generated {len(embeddings)} embeddings — dim {embeddings.shape[1]}")
+
+
+# ============================================
+# STEP 3 — REBUILD PINECONE INDEX
+#
+# We wipe the existing index and rebuild from scratch rather than
+# doing incremental upserts. This is safer because:
+#   - Deleted careers from old O*NET fetches get fully removed
+#   - Career IDs (career_0, career_1 ...) stay in sync with df.iloc
+#   - No stale vectors drift into recommendations
+#
+# The index uses cosine similarity — standard for sentence embeddings
+# because magnitude differences don't carry semantic meaning.
+# ============================================
+
+print("\n🔄 Connecting to Pinecone...")
+pc         = Pinecone(api_key=secret_client.get_secret("PINECONE_API_KEY"))
+index_name = "career-discovery"
+
+# Delete the old index if it exists — full rebuild is safer than incremental
+existing = [i.name for i in pc.list_indexes()]
+if index_name in existing:
+    print("🗑️  Deleting old index...")
+    pc.delete_index(index_name)
+    time.sleep(10)   # Pinecone needs a moment to fully decommission
+
+print("🔄 Creating fresh index...")
+pc.create_index(
+    name      = index_name,
+    dimension = 384,           # must match all-MiniLM-L6-v2 output dim
+    metric    = "cosine",
+    spec      = ServerlessSpec(cloud="aws", region="us-east-1")
+)
+time.sleep(15)   # wait for index to become ready before upserting
+print("✅ Fresh index created")
+
+index = pc.Index(index_name)
+
+# Build the vector payload. The metadata dict is what gets returned
+# in search results — keep it lean (only what the app actually reads).
+vectors = []
+for i, row in df.iterrows():
+    vectors.append({
+        "id":     f"career_{i}",       # must match df.iloc[i] for downstream lookups
+        "values": embeddings[i].tolist(),
+        "metadata": {
+            "job_title":        str(row.get('job_title', '')),
+            "sector":           str(row.get('sector', '')),
+            "stream":           str(row.get('stream', '')),
+            "nco_id":           str(row.get('nco_id', '')),
+            "primary_riasec":   str(row.get('primary_riasec', '')),
+            "secondary_riasec": str(row.get('secondary_riasec', ''))
+        }
+    })
+
+# Upsert in batches of 100 — Pinecone's recommended batch size
+print(f"🔄 Uploading {len(vectors)} vectors to Pinecone...")
+for i in range(0, len(vectors), 100):
+    index.upsert(vectors=vectors[i:i+100])
+    if (i // 100 + 1) % 5 == 0:
+        print(f"  ✅ Uploaded {min(i+100, len(vectors))}/{len(vectors)} vectors")
+
+# Brief pause to let the index catch up before we query stats
+time.sleep(5)
+stats = index.describe_index_stats()
+print(f"✅ Pinecone reindexed — total vectors: {stats['total_vector_count']}")
+
+# Hard assertion — if this fails, something went wrong during upsert
+# and the app would silently return wrong results
+assert stats['total_vector_count'] == len(df), (
+    f"MISMATCH: {stats['total_vector_count']} vectors vs {len(df)} careers. "
+    f"Re-run the upsert loop."
+)
+print("✅ Vector count matches career count — index is consistent")
+
+
+# ============================================
+# STEP 4 — TRAIN LIGHTSVD ON SEED INTERACTIONS
+#
+# The seed dataset (interactions.csv) contains ~100 synthetic student
+# profiles with realistic stream-career preference patterns. It ensures
+# the collaborative filter has something to work with from day one
+# instead of falling back to global mean for every prediction.
+#
+# In production (backend/collaborative.py), real Keep/Drop signals
+# from Supabase are loaded alongside this seed data and given 2x weight
+# so they progressively dominate as real usage grows.
+#
+# Here we only train on the seed data (weight=1.0) since we don't have
+# a Supabase connection in this setup script.
+# ============================================
+
+print("\n📂 Loading seed interactions...")
+
+# Note: file must be named exactly interactions.csv (no spaces)
+interactions_df = pd.read_csv(f"{BASE}//interactions (1).csv")
+interactions_df = interactions_df[['student_id', 'career_id', 'rating']].copy()
+interactions_df['weight'] = 1.0   # seed weight — real interactions get 2.0 in production
+
+print(f"✅ Loaded {len(interactions_df)} interactions")
+print(f"\n📊 Interaction stats:")
+print(f"   Unique students : {interactions_df['student_id'].nunique()}")
+print(f"   Unique careers  : {interactions_df['career_id'].nunique()}")
+print(f"   Rating dist     :\n{interactions_df['rating'].value_counts().sort_index()}")
+
+print("\n🔄 Training LightSVD model...")
+svd_model = LightSVD(n_factors=50, n_epochs=20)
+svd_model.fit(interactions_df)
+
+
+# ============================================
+# HELPER — RIASEC BOOST
+#
+# Copied from backend/content_filter.py.
+# Careers whose RIASEC profile matches the student's top-2 personality
+# types get a score multiplier applied after the hybrid combination.
+#
+# Primary match (career RIASEC == student's dominant type) → 1.3x
+# Secondary match (career RIASEC == student's secondary type) → 1.15x
+# No match → 1.0x (career still shown, just ranked lower)
+#
+# The boost is intentionally modest — strong enough to surface relevant
+# careers without completely overriding semantic similarity scores.
+# ============================================
+
+def get_riasec_boost(career_row, student_riasec):
+    primary   = career_row.get('primary_riasec', '')
+    secondary = career_row.get('secondary_riasec', '')
+    top_type  = student_riasec['top2'][0]
+    sec_type  = student_riasec['top2'][1]
+
+    if primary == top_type or secondary == top_type:
+        return 1.3
+    elif primary == sec_type or secondary == sec_type:
+        return 1.15
+    return 1.0
+
+
+# ============================================
+# HELPER — HYBRID RECOMMENDATION ENGINE
+#
+# Mirrors the logic in backend/hybrid_engine.py.
+# Combines two signals:
+#
+#   1. Content score — cosine similarity from Pinecone (semantic match
+#      between student's interest text and the career's embedding)
+#   2. Collaborative score — LightSVD prediction normalised to [0,1]
+#      (what similar students preferred)
+#
+# Weights shift based on cold-start state:
+#   Cold start (no real data yet) → content only (1.0 / 0.0)
+#   Warm        → 0.7 content / 0.3 collab (default here)
+#
+# Post-combination, two multipliers are applied:
+#   - Stream boost (1.2x) for careers matching the student's stream
+#   - RIASEC boost (1.15x or 1.3x) for personality alignment
+# ============================================
+
+def search_careers_by_text(query_text, top_k=20):
+    """Encode the query and retrieve the top_k nearest careers from Pinecone."""
+    query_embedding = sentence_model.encode(query_text).tolist()
+    return index.query(
+        vector           = query_embedding,
+        top_k            = top_k,
+        include_metadata = True
+    )
+
+
+def hybrid_recommendations(
+        user_id, query_text, student_riasec,
+        preferred_stream=None,
+        content_weight=0.7, collab_weight=0.3,
+        top_k=10, is_cold_start=False):
+
+    # Cold start: no real interaction data yet — trust content only
+    if is_cold_start:
+        content_weight = 1.0
+        collab_weight  = 0.0
+
+    # --- Content signal ---
+    content_results = search_careers_by_text(query_text, top_k=20)
+
+    # --- Collaborative signal ---
+    # Get raw SVD predictions for all careers, then normalise to [0,1]
+    # so the scale is comparable to cosine similarity scores
+    collab_scores = {}
+    if collab_weight > 0:
+        raw = {i: svd_model.predict(user_id, i) for i in range(len(df))}
+        mn  = min(raw.values())
+        mx  = max(raw.values())
+        collab_scores = {
+            i: (raw[i] - mn) / (mx - mn) if mx > mn else 0.5
+            for i in raw
+        }
+
+    hybrid_scores = []
+    for match in content_results['matches']:
+        try:
+            career_id = int(match['id'].split('_')[1])
+        except (ValueError, IndexError):
+            continue   # malformed id — skip silently
+
+        if career_id >= len(df):
+            continue   # index out of bounds guard
+
+        career_row    = df.iloc[career_id]
+        career_stream = match['metadata'].get('stream', '')
+        content_score = match['score']
+        collab_score  = collab_scores.get(career_id, 0.5) if collab_weight > 0 else 0.0
+
+        # Cross-stream penalty: halve the collaborative score for careers
+        # outside the student's stream to prevent bleed-across recommendations
+        if preferred_stream and career_stream != preferred_stream:
+            collab_score *= 0.5
+
+        # Stream boost: slight lift for stream-aligned careers
+        stream_boost = 1.2 if (preferred_stream and
+                                career_stream == preferred_stream) else 1.0
+
+        # RIASEC boost: personality-alignment multiplier
+        riasec_boost = get_riasec_boost(career_row.to_dict(), student_riasec)
+
+        # Weighted combination, then apply post-score multipliers
+        final_score = (
+            content_weight * content_score +
+            collab_weight  * collab_score
+        ) * stream_boost * riasec_boost
+
+        hybrid_scores.append({
+            'career_id':        career_id,
+            'career':           career_row['job_title'],
+            'sector':           career_row.get('sector', ''),
+            'stream':           career_stream,
+            'primary_riasec':   career_row.get('primary_riasec', ''),
+            'secondary_riasec': career_row.get('secondary_riasec', ''),
+            'final_score':      round(final_score,   4),
+            'content_score':    round(content_score, 4),
+            'collab_score':     round(collab_score,  4),
+            'stream_boost':     stream_boost,
+            'riasec_boost':     riasec_boost,
+            'cold_start':       is_cold_start
+        })
+
+    # Sort descending — highest combined score wins
+    hybrid_scores.sort(key=lambda x: x['final_score'], reverse=True)
+    return hybrid_scores[:top_k]
+
+
+# ============================================
+# STEP 5 — SMOKE TEST / VALIDATION
+#
+# Runs 4 student profiles through the full pipeline to confirm:
+#   a) Pinecone is returning results
+#   b) Stream and RIASEC boosts are being applied correctly
+#   c) At least 3 of the top 5 results match the student's stream
+#      (a loose threshold — tighter would be unrealistic for rare streams)
+#
+# This is NOT a unit test — it's a sanity check after a fresh index
+# build. If it fails, inspect the warnings before deploying.
+# ============================================
+
+print("\n" + "="*60)
+print("VALIDATION: Testing 4 student profiles")
+print("="*60)
+
+test_cases = [
+    {
+        "name":    "Riya",
+        "user_id": "STU_TEST_0001",
+        "stream":  "Science",
+        "query":   "I love biology working in labs discovering new medicines",
+        "riasec":  {'top2': ['I', 'R'], 'riasec_code': 'IR'}
+    },
+    {
+        "name":    "Arjun",
+        "user_id": "STU_TEST_0002",
+        "stream":  "Commerce",
+        "query":   "I enjoy working with money analysing stocks and financial planning",
+        "riasec":  {'top2': ['C', 'E'], 'riasec_code': 'CE'}
+    },
+    {
+        "name":    "Priya",
+        "user_id": "STU_TEST_0003",
+        "stream":  "Arts",
+        "query":   "I love drawing creating designs and visual storytelling",
+        "riasec":  {'top2': ['A', 'S'], 'riasec_code': 'AS'}
+    },
+    {
+        "name":    "Rahul",
+        "user_id": "STU_TEST_0004",
+        "stream":  "Vocational",
+        "query":   "I enjoy fixing machines working with electrical systems hands on repair",
+        "riasec":  {'top2': ['R', 'C'], 'riasec_code': 'RC'}
+    }
+]
+
+all_passed = True
+
+for t in test_cases:
+    print(f"\n{'='*60}")
+    print(f"👤 {t['name']} ({t['user_id']}) — {t['stream']} / {t['riasec']['riasec_code']}")
+    print(f"💭 {t['query']}")
+    print(f"{'='*60}")
+
+    results = hybrid_recommendations(
+        user_id          = t['user_id'],
+        query_text       = t['query'],
+        student_riasec   = t['riasec'],
+        preferred_stream = t['stream'],
+        top_k            = 5,
+        is_cold_start    = True   # no real interactions in this script
+    )
+
+    if not results:
+        print(f"  ❌ FAIL — No results returned for {t['name']}")
+        all_passed = False
+        continue
+
+    # Count how many of the top 5 belong to the student's own stream
+    stream_match_count = sum(1 for r in results if r['stream'] == t['stream'])
+
+    for i, r in enumerate(results):
+        # Visual indicators so you can quickly spot boost effects
+        stream_icon = "🎓" if r['stream_boost'] > 1.0 else "  "
+        riasec_icon = (
+            "⭐⭐" if r['riasec_boost'] == 1.3  else
+            "⭐"  if r['riasec_boost'] == 1.15 else
+            "  "
+        )
+        print(f"  {i+1}. {stream_icon}{riasec_icon} {r['career']} "
+              f"({r['stream']}) — score: {r['final_score']}")
+
+    # Warn if stream diversity looks off — could indicate a boost bug
+    if stream_match_count < 3:
+        print(f"  ⚠️  WARNING — Only {stream_match_count}/5 from "
+              f"{t['stream']} stream. Check boost logic.")
+        all_passed = False
+    else:
+        print(f"  ✅ {stream_match_count}/5 results from {t['stream']} stream — looks good")
+
+print(f"\n{'='*60}")
+if all_passed:
+    print("✅ ALL VALIDATION CHECKS PASSED — pipeline is healthy")
+else:
+    print("⚠️  SOME CHECKS FAILED — review warnings above before deploying")
+print("="*60)
