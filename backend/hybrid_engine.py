@@ -1,6 +1,15 @@
 # ============================================
 # backend/hybrid_engine.py
 # Combines content-based and collaborative scores
+# with adaptive cold-start weighting.
+#
+# Cold-start design:
+#   - When a new student arrives with zero real interactions,
+#     the system falls back to pure content-based retrieval.
+#   - As real Keep/Drop signals accumulate in Supabase,
+#     the collaborative weight grows across four stages.
+#   - The is_cold_start flag is determined at runtime from
+#     the actual interaction count, NOT hardcoded in app.py.
 # ============================================
 import numpy as np
 import requests
@@ -12,28 +21,59 @@ from backend.content_filter import (
 )
 
 
+# ── Adaptive weight schedule ──────────────────────────────────
+# Four stages based on real interaction volume.
+# Stage 0 (cold start): pure content retrieval — no collaborative signal.
+# Stage 1–3: collaborative weight grows as real data accumulates.
+# These thresholds are tuned to the expected interaction rate
+# for a single Class 12 student session (typically 5–15 decisions).
+
+WEIGHT_STAGES = [
+    (0,  1.00, 0.00),   # Stage 0: cold start — content only
+    (10, 0.85, 0.15),   # Stage 1: sparse data — content dominant
+    (30, 0.70, 0.30),   # Stage 2: moderate data — balanced hybrid
+    (float('inf'), 0.55, 0.45),  # Stage 3: rich data — collaborative earns more weight
+]
+
+
 def get_adaptive_weights(n_real_interactions):
     """
-    Compute content and collaborative weights based on real interaction volume.
-    Cold start → pure content. As real data grows → collab earns more weight.
+    Return (content_weight, collab_weight) based on how many real
+    Keep/Drop interactions exist for this student.
+
+    This implements the four-stage adaptive schedule described in the paper.
+    The weights shift progressively so the collaborative component only
+    contributes once it has enough signal to be reliable.
+
+    Args:
+        n_real_interactions: int — count of real interactions from Supabase
+
+    Returns:
+        (float, float) — content_weight, collab_weight that sum to 1.0
     """
-    if n_real_interactions == 0:
-        return 1.0, 0.0
-    elif n_real_interactions < 10:
-        return 0.85, 0.15
-    elif n_real_interactions < 30:
-        return 0.70, 0.30
-    else:
-        return 0.55, 0.45
+    for threshold, cw, sw in WEIGHT_STAGES:
+        if n_real_interactions < threshold:
+            return cw, sw
+    # Fallback — should never reach here given float('inf') sentinel
+    return 0.55, 0.45
 
 
-def get_real_interaction_count(supabase):
+def get_real_interaction_count(supabase, student_id=None):
     """
-    Count total real Keep/Drop interactions in Supabase.
+    Count real Keep/Drop interactions in Supabase.
+
+    If student_id is provided, count only that student's interactions
+    (per-student cold start). Otherwise count globally.
+
     Returns 0 safely if Supabase is unavailable.
     """
     try:
-        result = supabase.table("live_interactions").select("student_id", count="exact").execute()
+        query = supabase.table("live_interactions").select(
+            "student_id", count="exact"
+        )
+        if student_id:
+            query = query.eq("student_id", student_id)
+        result = query.execute()
         return result.count or 0
     except Exception:
         return 0
@@ -41,14 +81,24 @@ def get_real_interaction_count(supabase):
 
 def expand_query(query, groq_key):
     """
-    Expand vague student interest queries into richer semantic descriptions.
-    Only runs if query is fewer than 15 words.
-    Returns (expanded_query, was_expanded) tuple.
-    Falls back to original query on any failure.
+    Expand a short or vague student interest query using Llama 3.3-70B
+    hosted on Groq. Only triggered when the query is fewer than 15 words.
+
+    The expansion rewrites the student's raw text into a richer semantic
+    description that improves embedding similarity with career texts.
+
+    Args:
+        query: str — raw student interest text
+        groq_key: str — Groq API key
+
+    Returns:
+        (expanded_query, was_expanded): tuple of (str, bool)
+        Falls back to original query on any API failure.
     """
     if not query or not query.strip():
         return query, False
 
+    # Only expand short queries — long ones already carry enough signal
     if len(query.split()) > 15:
         return query, False
 
@@ -81,8 +131,7 @@ def expand_query(query, groq_key):
             timeout=10
         )
         if r.status_code == 200:
-            data = r.json()
-            # Guard against unexpected response shape
+            data    = r.json()
             choices = data.get("choices", [])
             if choices:
                 expanded = choices[0].get("message", {}).get("content", "").strip()
@@ -96,11 +145,21 @@ def expand_query(query, groq_key):
 
 def get_collab_scores(user_id, n_careers, svd_model):
     """
-    Compute and normalise collaborative scores for all careers to [0, 1].
+    Compute normalised collaborative scores for all careers in [0, 1].
+
+    Raw SVD predictions are in the range [1, 5]. We normalise them to
+    [0, 1] so they are on the same scale as cosine similarity scores
+    before the weighted combination.
+
+    Args:
+        user_id: str — student identifier
+        n_careers: int — total number of careers in the index
+        svd_model: LightSVD — trained model instance
+
+    Returns:
+        dict mapping career_id (int) -> normalised score (float)
     """
-    raw_scores = {}
-    for cid in range(n_careers):
-        raw_scores[cid] = svd_model.predict(user_id, cid)
+    raw_scores = {cid: svd_model.predict(user_id, cid) for cid in range(n_careers)}
 
     max_s = max(raw_scores.values())
     min_s = min(raw_scores.values())
@@ -111,27 +170,57 @@ def get_collab_scores(user_id, n_careers, svd_model):
             for cid, score in raw_scores.items()
         }
     else:
+        # All predictions identical — return neutral 0.5 for all
         return {cid: 0.5 for cid in raw_scores}
 
 
 def get_recommendations(user_id, query, student_stream, riasec_top2,
                         df, sentence_model, index, svd_model,
-                        supabase, is_cold_start=True, top_k=10):
+                        supabase, top_k=10):
     """
-    Full hybrid recommendation pipeline with adaptive weighting.
-    Returns list of recommendation dicts sorted by final_score descending.
+    Full hybrid recommendation pipeline.
+
+    Pipeline steps:
+    1. Determine adaptive weights from real interaction count.
+       If count == 0, operate in cold-start mode (content only).
+    2. Retrieve top-20 candidates via semantic search (Pinecone).
+    3. If not cold-start, compute normalised collaborative scores (LightSVD).
+    4. Apply cross-stream penalty to collaborative scores for out-of-stream careers.
+    5. Combine content and collaborative scores with adaptive weights.
+    6. Apply stream boost (1.2×) and RIASEC boost (1.3×/1.15×/1.0×).
+    7. Sort descending and return top_k results.
+
+    The is_cold_start flag is determined here from actual interaction
+    count — it is NOT passed in from app.py. This ensures the system
+    automatically transitions out of cold-start mode as real data grows.
+
+    Args:
+        user_id: str — unique student session ID
+        query: str — student interest text (possibly LLM-expanded)
+        student_stream: str — Science / Commerce / Arts / Vocational
+        riasec_top2: list — e.g. ['I', 'R']
+        df: DataFrame — merged career dataset (O*NET + India-specific)
+        sentence_model: SentenceTransformer
+        index: Pinecone index
+        svd_model: LightSVD
+        supabase: Supabase client
+        top_k: int — number of results to return
+
+    Returns:
+        list of recommendation dicts sorted by final_score descending
     """
     if not query or df.empty:
         return []
 
-    n_real = get_real_interaction_count(supabase)
+    # ── Step 1: Determine cold-start state from real data ─────
+    # Count only this student's interactions for per-student cold start.
+    # A new student always starts in cold-start mode regardless of how
+    # many other students have interacted with the system.
+    n_real       = get_real_interaction_count(supabase, student_id=user_id)
+    is_cold_start = (n_real == 0)
     content_weight, collab_weight = get_adaptive_weights(n_real)
 
-    # Override to cold start if explicitly requested
-    if is_cold_start:
-        content_weight = 1.0
-        collab_weight  = 0.0
-
+    # ── Step 2: Semantic retrieval (always runs) ──────────────
     try:
         matches = search_careers(query, sentence_model, index, top_k=20)
     except Exception as e:
@@ -141,8 +230,9 @@ def get_recommendations(user_id, query, student_stream, riasec_top2,
     if not matches:
         return []
 
+    # ── Step 3: Collaborative scores (skipped in cold start) ──
     collab_scores = {}
-    if collab_weight > 0:
+    if not is_cold_start and collab_weight > 0:
         try:
             collab_scores = get_collab_scores(user_id, len(df), svd_model)
         except Exception as e:
@@ -150,6 +240,7 @@ def get_recommendations(user_id, query, student_stream, riasec_top2,
             content_weight = 1.0
             collab_weight  = 0.0
 
+    # ── Steps 4–7: Score combination and re-ranking ───────────
     results = []
     for match in matches:
         try:
@@ -164,7 +255,8 @@ def get_recommendations(user_id, query, student_stream, riasec_top2,
         career_stream = match['metadata'].get('stream', '')
         content_score = match['score']
 
-        collab_score = collab_scores.get(cid, 0.5) if collab_weight > 0 else 0.0
+        # Apply cross-stream penalty to collaborative score before combining
+        collab_score = collab_scores.get(cid, 0.5) if (not is_cold_start and collab_weight > 0) else 0.0
         collab_score = apply_cross_stream_penalty(
             collab_score, career_stream, student_stream
         )
@@ -172,6 +264,7 @@ def get_recommendations(user_id, query, student_stream, riasec_top2,
         stream_boost = get_stream_boost(career_stream, student_stream)
         riasec_boost = get_riasec_boost(career_row.to_dict(), riasec_top2)
 
+        # Weighted combination then post-score multipliers
         base_score  = content_weight * content_score + collab_weight * collab_score
         final_score = base_score * stream_boost * riasec_boost
 
@@ -188,7 +281,10 @@ def get_recommendations(user_id, query, student_stream, riasec_top2,
             'collab_score':     round(collab_score,  4),
             'stream_boost':     stream_boost,
             'riasec_boost':     riasec_boost,
-            'is_cold_start':    collab_weight == 0.0
+            'is_cold_start':    is_cold_start,
+            'n_real_interactions': n_real,
+            'content_weight':   content_weight,
+            'collab_weight':    collab_weight,
         })
 
     results.sort(key=lambda x: x['final_score'], reverse=True)
