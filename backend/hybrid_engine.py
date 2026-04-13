@@ -29,12 +29,11 @@ from backend.content_filter import (
 # for a single Class 12 student session (typically 5–15 decisions).
 
 WEIGHT_STAGES = [
-    (0,  1.00, 0.00),   # Stage 0: cold start — content only
-    (10, 0.85, 0.15),   # Stage 1: sparse data — content dominant
-    (30, 0.70, 0.30),   # Stage 2: moderate data — balanced hybrid
-    (float('inf'), 0.55, 0.45),  # Stage 3: rich data — collaborative earns more weight
+    (1,  1.00, 0.00),   # Stage 0: cold start — content only (n = 0)
+    (10, 0.85, 0.15),   # Stage 1: sparse
+    (30, 0.70, 0.30),   # Stage 2: moderate
+    (float('inf'), 0.55, 0.45),  # Stage 3: rich
 ]
-
 
 def get_adaptive_weights(n_real_interactions):
     """
