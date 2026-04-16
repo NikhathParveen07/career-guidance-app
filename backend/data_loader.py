@@ -44,25 +44,104 @@ def _load_india_specific(existing_df):
         return existing_df
 
 
+def _load_from_supabase_cache(supabase):
+    """
+    Fast path: load careers directly from Supabase onet_careers table.
+    Returns DataFrame or None if cache is empty / unavailable.
+    This avoids triggering a slow O*NET API re-fetch on every cold start.
+    """
+    try:
+        from datetime import datetime, timezone
+
+        cached = supabase.table("onet_careers").select("*").execute()
+        if not cached.data or len(cached.data) < 100:
+            return None
+
+        # Check freshness
+        first = cached.data[0]
+        cached_str = first.get("cached_at", "2000-01-01T00:00:00+00:00")
+        cached_str = cached_str.replace("Z", "+00:00")
+        cached_at = datetime.fromisoformat(cached_str)
+        age_days = (datetime.now(timezone.utc) - cached_at).days
+
+        if age_days >= 30:
+            print(f"Supabase cache is {age_days} days old — will use CSV fallback")
+            return None
+
+        df = pd.DataFrame(cached.data)
+        print(f"Loaded {len(df)} careers from Supabase cache (age: {age_days} days)")
+        return df
+
+    except Exception as e:
+        print(f"Supabase cache load failed: {e}")
+        return None
+
+
+def _load_from_csv():
+    """
+    Load careers from bundled CSV files.
+    Tries onet_careers_filtered.csv first, then onet_careers_rows.csv.
+    Returns DataFrame or None if no file found.
+    """
+    # Try primary filtered CSV
+    for filename in ["onet_careers_filtered.csv", "onet_careers_rows.csv"]:
+        csv_path = os.path.join(DATA_DIR, filename)
+        if os.path.exists(csv_path):
+            try:
+                df = pd.read_csv(csv_path)
+                print(f"Loaded {len(df)} careers from {filename}")
+                return df
+            except Exception as e:
+                print(f"Failed to read {filename}: {e}")
+
+    print(f"No CSV career file found in {DATA_DIR}")
+    return None
+
+
 @st.cache_data(ttl=86400)
 def load_careers():
     """
     Returns (df, pinecone_needs_rebuild).
 
-    pinecone_needs_rebuild is True only when a fresh O*NET fetch just ran
-    (i.e., cache miss AND O*NET returned data).
+    Loading priority:
+      1. Supabase onet_careers cache (fast, skips O*NET API)
+      2. Bundled CSV (onet_careers_filtered.csv or onet_careers_rows.csv)
+      3. O*NET API live fetch (slow — only if both above are unavailable)
+
+    pinecone_needs_rebuild is True only when a fresh O*NET fetch just ran.
 
     NOTE: st.session_state must NOT be accessed inside @st.cache_data.
     The per-session dedup of the Pinecone rebuild is handled in main()
     via st.session_state["pinecone_rebuilt"].
     """
-    fresh_fetch = False
+    supabase = load_supabase()
 
-    # Try O*NET API path first
+    # ── Fast path 1: Supabase cache ───────────────────────────
+    df = _load_from_supabase_cache(supabase)
+    if df is not None:
+        if "12th_stream" in df.columns:
+            df = df.rename(columns={"12th_stream": "stream"})
+        if "onet_code" in df.columns and "nco_id" not in df.columns:
+            df["nco_id"] = df["onet_code"]
+        df = _load_india_specific(df)
+        return df, False  # no Pinecone rebuild needed
+
+    # ── Fast path 2: Bundled CSV ──────────────────────────────
+    df = _load_from_csv()
+    if df is not None:
+        if "12th_stream" in df.columns:
+            df = df.rename(columns={"12th_stream": "stream"})
+        if "onet_code" in df.columns and "nco_id" not in df.columns:
+            df["nco_id"] = df["onet_code"]
+        df = _load_india_specific(df)
+        return df, False
+
+    # ── Slow path: O*NET live API fetch ───────────────────────
+    # Only reached if BOTH Supabase and CSV are unavailable.
+    # This is the path that causes the long hang — only runs as last resort.
+    print("WARNING: Falling back to live O*NET API fetch — this will be slow")
     try:
-        api_key  = st.secrets.get("ONET_API_KEY", None)
-        supabase = load_supabase()
-
+        api_key = st.secrets.get("ONET_API_KEY", None)
         if api_key:
             careers = fetch_all_onet_careers(api_key, supabase)
             if careers and len(careers) > 10:
@@ -71,28 +150,17 @@ def load_careers():
                     df = df.rename(columns={"12th_stream": "stream"})
                 if "onet_code" in df.columns and "nco_id" not in df.columns:
                     df["nco_id"] = df["onet_code"]
-
-                # fresh_fetch marks that this function body actually ran
-                # (only happens on cache miss = genuine fresh O*NET pull)
-                fresh_fetch = True
                 df = _load_india_specific(df)
-                return df, fresh_fetch
-
+                return df, True  # Pinecone rebuild needed after fresh fetch
     except Exception as e:
-        print(f"O*NET path failed, falling back to CSV: {e}")
+        print(f"O*NET API fetch failed: {e}")
 
-    # Fallback: load from bundled CSV
-    csv_path = os.path.join(DATA_DIR, "career_master_final.csv")
-    if not os.path.exists(csv_path):
-        st.error(f"Career data file not found at {csv_path}. Check your data directory.")
-        return pd.DataFrame(), False
-
-    df = pd.read_csv(csv_path)
-    if "12th_stream" in df.columns:
-        df = df.rename(columns={"12th_stream": "stream"})
-
-    df = _load_india_specific(df)
-    return df, fresh_fetch  # fresh_fetch is False for CSV path
+    st.error(
+        "Career data could not be loaded. "
+        "Expected one of these files in the data/ directory: "
+        "onet_careers_filtered.csv or onet_careers_rows.csv"
+    )
+    return pd.DataFrame(), False
 
 
 @st.cache_resource
