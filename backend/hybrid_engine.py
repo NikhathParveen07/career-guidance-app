@@ -260,10 +260,10 @@ def get_recommendations(user_id, query, student_stream, riasec_top2,
             collab_score, career_stream, student_stream
         )
 
-        # stream_boost = get_stream_boost(career_stream, student_stream)
-        # riasec_boost = get_riasec_boost(career_row.to_dict(), riasec_top2)
-        stream_boost = 1.0  # BASELINE A: no boost for test chnage later
-        riasec_boost = 1.0  # BASELINE A: no boost
+        stream_boost = get_stream_boost(career_stream, student_stream)
+        riasec_boost = get_riasec_boost(career_row.to_dict(), riasec_top2)
+        # stream_boost = 1.0  # BASELINE A: no boost for test chnage later
+        # riasec_boost = 1.0  # BASELINE A: no boost
 
         # Weighted combination then post-score multipliers
         base_score  = content_weight * content_score + collab_weight * collab_score
