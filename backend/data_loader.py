@@ -22,6 +22,27 @@ def load_supabase():
     )
 
 
+def _clean_df(df):
+    """Defensive cleaning applied regardless of data source."""
+    if "12th_stream" in df.columns:
+        df = df.rename(columns={"12th_stream": "stream"})
+    if "onet_code" in df.columns and "nco_id" not in df.columns:
+        df["nco_id"] = df["onet_code"]
+    if 'core_skills' in df.columns:
+        df['core_skills'] = df['core_skills'].fillna('')
+    if 'job_title' in df.columns:
+        df['job_title'] = df['job_title'].fillna('')
+    if 'sector' in df.columns:
+        df['sector'] = df['sector'].fillna('')
+    if 'stream' in df.columns:
+        df['stream'] = df['stream'].fillna('')
+    if 'primary_riasec' in df.columns:
+        df['primary_riasec'] = df['primary_riasec'].fillna('')
+    if 'secondary_riasec' in df.columns:
+        df['secondary_riasec'] = df['secondary_riasec'].fillna('')
+    return df
+
+
 def _load_india_specific(existing_df):
     """Merge India-specific careers into an existing DataFrame."""
     india_path = os.path.join(DATA_DIR, "india_specific_careers.csv")
@@ -37,6 +58,11 @@ def _load_india_specific(existing_df):
         merged = pd.concat([existing_df, india_df], ignore_index=True).drop_duplicates(
             subset="job_title", keep="first"
         ).reset_index(drop=True)
+        # Fill NaN after merge
+        merged['core_skills'] = merged['core_skills'].fillna('') if 'core_skills' in merged.columns else ''
+        merged['job_title']   = merged['job_title'].fillna('')   if 'job_title'   in merged.columns else ''
+        merged['sector']      = merged['sector'].fillna('')       if 'sector'      in merged.columns else ''
+        merged['stream']      = merged['stream'].fillna('')       if 'stream'      in merged.columns else ''
         print(f"Career list after India merge: {len(merged)} careers")
         return merged
     except Exception as e:
@@ -48,7 +74,6 @@ def _load_from_supabase_cache(supabase):
     """
     Fast path: load careers directly from Supabase onet_careers table.
     Returns DataFrame or None if cache is empty / unavailable.
-    This avoids triggering a slow O*NET API re-fetch on every cold start.
     """
     try:
         from datetime import datetime, timezone
@@ -57,7 +82,6 @@ def _load_from_supabase_cache(supabase):
         if not cached.data or len(cached.data) < 100:
             return None
 
-        # Check freshness
         first = cached.data[0]
         cached_str = first.get("cached_at", "2000-01-01T00:00:00+00:00")
         cached_str = cached_str.replace("Z", "+00:00")
@@ -83,7 +107,6 @@ def _load_from_csv():
     Tries onet_careers_filtered.csv first, then onet_careers_rows.csv.
     Returns DataFrame or None if no file found.
     """
-    # Try primary filtered CSV
     for filename in ["onet_careers_filtered.csv", "onet_careers_rows.csv"]:
         csv_path = os.path.join(DATA_DIR, filename)
         if os.path.exists(csv_path):
@@ -109,36 +132,24 @@ def load_careers():
       3. O*NET API live fetch (slow — only if both above are unavailable)
 
     pinecone_needs_rebuild is True only when a fresh O*NET fetch just ran.
-
-    NOTE: st.session_state must NOT be accessed inside @st.cache_data.
-    The per-session dedup of the Pinecone rebuild is handled in main()
-    via st.session_state["pinecone_rebuilt"].
     """
     supabase = load_supabase()
 
-    # ── Fast path 1: Supabase cache ───────────────────────────
+    # Fast path 1: Supabase cache
     df = _load_from_supabase_cache(supabase)
     if df is not None:
-        if "12th_stream" in df.columns:
-            df = df.rename(columns={"12th_stream": "stream"})
-        if "onet_code" in df.columns and "nco_id" not in df.columns:
-            df["nco_id"] = df["onet_code"]
-        df = _load_india_specific(df)
-        return df, False  # no Pinecone rebuild needed
-
-    # ── Fast path 2: Bundled CSV ──────────────────────────────
-    df = _load_from_csv()
-    if df is not None:
-        if "12th_stream" in df.columns:
-            df = df.rename(columns={"12th_stream": "stream"})
-        if "onet_code" in df.columns and "nco_id" not in df.columns:
-            df["nco_id"] = df["onet_code"]
+        df = _clean_df(df)
         df = _load_india_specific(df)
         return df, False
 
-    # ── Slow path: O*NET live API fetch ───────────────────────
-    # Only reached if BOTH Supabase and CSV are unavailable.
-    # This is the path that causes the long hang — only runs as last resort.
+    # Fast path 2: Bundled CSV
+    df = _load_from_csv()
+    if df is not None:
+        df = _clean_df(df)
+        df = _load_india_specific(df)
+        return df, False
+
+    # Slow path: O*NET live fetch
     print("WARNING: Falling back to live O*NET API fetch — this will be slow")
     try:
         api_key = st.secrets.get("ONET_API_KEY", None)
@@ -146,12 +157,9 @@ def load_careers():
             careers = fetch_all_onet_careers(api_key, supabase)
             if careers and len(careers) > 10:
                 df = pd.DataFrame(careers)
-                if "12th_stream" in df.columns:
-                    df = df.rename(columns={"12th_stream": "stream"})
-                if "onet_code" in df.columns and "nco_id" not in df.columns:
-                    df["nco_id"] = df["onet_code"]
+                df = _clean_df(df)
                 df = _load_india_specific(df)
-                return df, True  # Pinecone rebuild needed after fresh fetch
+                return df, True
     except Exception as e:
         print(f"O*NET API fetch failed: {e}")
 
