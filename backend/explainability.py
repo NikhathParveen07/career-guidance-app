@@ -28,7 +28,7 @@ def explain_interest_match(query, core_skills, content_score):
     This component grounds the explanation in the student's
     own words wherever possible.
     """
-    def explain_interest_match(query, core_skills, content_score):
+    
     query_words = set(query.lower().split()) - STOP_WORDS
     skill_words = set(str(core_skills or '').lower().replace(',', '').split()) - STOP_WORDS
     overlap     = query_words & skill_words
