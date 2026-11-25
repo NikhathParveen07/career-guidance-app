@@ -125,7 +125,7 @@ def expand_query(query, groq_key):
                 "model":       "openai/gpt-oss-20b",
                 "messages":    [{"role": "user", "content": prompt}],
                 "temperature": 0.3,
-                "max_tokens":  150
+                "max_tokens":  300
             },
             timeout=10
         )
