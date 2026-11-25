@@ -22,10 +22,11 @@ def _call_groq(prompt, groq_key):
                 "Content-Type":  "application/json"
             },
             json={
-                "model":       GROQ_MODEL,
-                "messages":    [{"role": "user", "content": prompt}],
-                "temperature": 0.3,
-                "max_tokens":  1800
+                "model":           GROQ_MODEL,
+                "messages":        [{"role": "user", "content": prompt}],
+                "temperature":     0.3,
+                "max_tokens":      3500,
+                "response_format": {"type": "json_object"}
             },
             timeout=30
         )
@@ -52,6 +53,8 @@ def _call_groq(prompt, groq_key):
 
 def _parse_json_response(raw_text):
     if not raw_text:
+        import streamlit as st
+        st.warning("Groq returned empty content (increase max_tokens).")
         return None
 
     clean = raw_text.replace("```json", "").replace("```", "").strip()
@@ -65,9 +68,10 @@ def _parse_json_response(raw_text):
         start = clean.index("{")
         end   = clean.rindex("}") + 1
         return json.loads(clean[start:end])
-    except Exception:
+    except Exception as e:
+        import streamlit as st
+        st.warning(f"JSON parse failed ({e}). Raw preview: {clean[:250]}")
         return None
-
 
 # ── Function 1: National Career Pathway ──────────────────────
 
