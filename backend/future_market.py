@@ -9,7 +9,7 @@ import re
 from datetime import datetime, timezone
 
 GROQ_URL          = "https://api.groq.com/openai/v1/chat/completions"
-GROQ_MODEL        = "llama-3.3-70b-versatile"
+GROQ_MODEL        = "openai/gpt-oss-20b"
 WORLD_BANK_URL    = "https://api.worldbank.org/v2"
 CACHE_DAYS        = 7
 SALARY_CACHE_DAYS = 30
