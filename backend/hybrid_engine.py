@@ -122,7 +122,7 @@ def expand_query(query, groq_key):
                 "Content-Type": "application/json"
             },
             json={
-                "model":       "llama-3.3-70b-versatile",
+                "model":       "openai/gpt-oss-20b",
                 "messages":    [{"role": "user", "content": prompt}],
                 "temperature": 0.3,
                 "max_tokens":  150
